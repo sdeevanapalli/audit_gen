@@ -5,24 +5,18 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
-import json
 from dotenv import load_dotenv
-import ssl
 from openai import OpenAI
 
-# --- Load environment variables ---
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID") or 'your-folder-id'
 
-# --- Fix SSL issues (macOS/legacy) ---
-ssl._create_default_https_context = ssl._create_unverified_context
 
-# --- Initialize OpenAI client ---
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# --- Write service account JSON to temp file ---
+
 SERVICE_ACCOUNT_FILE = "service_account.json"
 with open(SERVICE_ACCOUNT_FILE, "w") as f:
     f.write(SERVICE_ACCOUNT_JSON)
@@ -55,7 +49,7 @@ def extract_text_from_pdf_bytes(pdf_data):
     reader = PdfReader(io.BytesIO(pdf_data))
     return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
 
-# --- UI ---
+
 st.title("Audit Assistant with OpenAI")
 
 service = get_drive_service()
@@ -92,6 +86,6 @@ else:
                 st.subheader("OpenAI's Response")
                 st.write(response.choices[0].message.content)
 
-# Optional cleanup
+
 import atexit
 atexit.register(lambda: os.remove(SERVICE_ACCOUNT_FILE) if os.path.exists(SERVICE_ACCOUNT_FILE) else None)
