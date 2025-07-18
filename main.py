@@ -71,7 +71,7 @@ def create_docx_from_text(text):
 st.title("Audit Assistant with OpenAI")
 service = get_drive_service()
 
-# Split layout
+# Layout
 col1, col2 = st.columns([1, 2])
 
 with col1:
@@ -99,68 +99,49 @@ with col1:
     if model_choice in ["gpt-4", "gpt-4o"]:
         st.warning("⚠️ Using this model will consume more tokens and may increase costs.")
 
-<<<<<<< HEAD
-# Step 5: Combine text from all PDFs
-combined_text = ""
-
-# PDFs from Drive
-for pdf in pdfs:
-    pdf_data = download_pdf_as_bytes(service, pdf['id'])
-    combined_text += f"\n\n--- {pdf['folder_name']} / {pdf['name']} ---\n"
-    combined_text += extract_text_from_pdf_bytes(pdf_data)
-
-# PDFs from Upload
-for uploaded_file in uploaded_files:
-    combined_text += f"\n\n--- uploaded / {uploaded_file.name} ---\n"
-    combined_text += extract_text_from_pdf_bytes(uploaded_file.read())
-
-# Step 6: Chatbox always visible
-st.subheader("PDF Content Preview (if any)")
-if combined_text:
-    st.text_area("Extracted Text", value=combined_text[:2000], height=300)
-
-user_input = st.text_input("What would you like to ask or do?")
-
-if user_input:
-    if combined_text:
-=======
-    # Step 5: User query input (always visible)
+    # Step 5: User query (always visible)
     user_input = st.text_input("What would you like to ask or do?")
 
 with col2:
-    # Step 6: Process and show
     combined_text = ""
 
+    # PDFs from Drive
     for pdf in pdfs:
         pdf_data = download_pdf_as_bytes(service, pdf['id'])
         combined_text += f"\n\n--- {pdf['folder_name']} / {pdf['name']} ---\n"
         combined_text += extract_text_from_pdf_bytes(pdf_data)
 
+    # PDFs from Upload
     for uploaded_file in uploaded_files:
         combined_text += f"\n\n--- uploaded / {uploaded_file.name} ---\n"
         combined_text += extract_text_from_pdf_bytes(uploaded_file.read())
 
+    # Show preview
+    st.subheader("PDF Content Preview")
     if combined_text:
-        st.subheader("PDF Content Preview")
         st.text_area("Extracted Text", value=combined_text[:2000], height=300)
-
-    if user_input and combined_text:
-        with st.spinner("Thinking..."):
-            response = client.chat.completions.create(
-                model=model_choice,
-                messages=[
-                    {"role": "system", "content": "You're an expert in auditing, compliance, and document comparison. Respond precisely to the user's query."},
-                    {"role": "user", "content": f"The following is content from selected PDF(s):\n{combined_text[:10000]}\n\nUser instruction:\n{user_input}"}
-                ]
-            )
-            final_response = response.choices[0].message.content
-            st.subheader("OpenAI's Response")
-            st.write(final_response)
-
-            docx_buffer = create_docx_from_text(final_response)
-            st.download_button("Download as DOCX", data=docx_buffer, file_name="openai_response.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     else:
-        st.warning("⚠️ Please select/upload at least one PDF to proceed.")
+        st.info("No PDF content to preview yet.")
+
+    # Query + Response
+    if user_input:
+        if combined_text:
+            with st.spinner("Thinking..."):
+                response = client.chat.completions.create(
+                    model=model_choice,
+                    messages=[
+                        {"role": "system", "content": "You're an expert in auditing, compliance, and document comparison. Respond precisely to the user's query."},
+                        {"role": "user", "content": f"The following is content from selected PDF(s):\n{combined_text[:10000]}\n\nUser instruction:\n{user_input}"}
+                    ]
+                )
+                final_response = response.choices[0].message.content
+                st.subheader("OpenAI's Response")
+                st.write(final_response)
+
+                docx_buffer = create_docx_from_text(final_response)
+                st.download_button("Download as DOCX", data=docx_buffer, file_name="openai_response.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        else:
+            st.warning("⚠️ Please select or upload at least one PDF to proceed.")
 
 # Cleanup temp file
 atexit.register(lambda: os.remove(SERVICE_ACCOUNT_FILE) if os.path.exists(SERVICE_ACCOUNT_FILE) else None)
