@@ -15,11 +15,11 @@ from docx import Document
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-MAIN_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")  # project#1 folder
+MAIN_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Write service account to file
+# Write service account to temp file
 SERVICE_ACCOUNT_FILE = "service_account.json"
 with open(SERVICE_ACCOUNT_FILE, "w") as f:
     f.write(SERVICE_ACCOUNT_JSON)
@@ -69,55 +69,57 @@ def create_docx_from_text(text):
 
 # UI
 st.title("Audit Assistant with OpenAI")
-
 service = get_drive_service()
 
-# Step 1: Choose subfolders inside project#1
-subfolders = list_subfolders(service, MAIN_FOLDER_ID)
-folder_names = [f['name'] for f in subfolders]
-selected_folder_names = st.multiselect("Select subfolder(s)", folder_names)
+# Split layout
+col1, col2 = st.columns([1, 2])
 
-# Step 2: Automatically collect all PDFs in selected subfolders
-pdfs = []
-for name in selected_folder_names:
-    folder_id = next(f['id'] for f in subfolders if f['name'] == name)
-    pdfs_in_folder = list_pdfs_in_folder(service, folder_id)
-    for pdf in pdfs_in_folder:
-        pdf['folder_name'] = name  # for clarity in output
-        pdfs.append(pdf)
+with col1:
+    st.subheader("PDF Selection")
 
-# Step 3: Optionally upload local PDFs
-uploaded_files = st.file_uploader("Or upload local PDF files", type=["pdf"], accept_multiple_files=True)
+    # Step 1: Subfolder selection
+    subfolders = list_subfolders(service, MAIN_FOLDER_ID)
+    folder_names = [f['name'] for f in subfolders]
+    selected_folder_names = st.multiselect("Select subfolder(s)", folder_names)
 
-# Step 4: Choose model
-model_choice = st.radio("Choose OpenAI Model", ["gpt-3.5-turbo", "gpt-4", "gpt-4o"], horizontal=True)
+    # Step 2: List PDFs from Drive
+    pdfs = []
+    for name in selected_folder_names:
+        folder_id = next(f['id'] for f in subfolders if f['name'] == name)
+        pdfs_in_folder = list_pdfs_in_folder(service, folder_id)
+        for pdf in pdfs_in_folder:
+            pdf['folder_name'] = name
+            pdfs.append(pdf)
 
-if model_choice in ["gpt-4", "gpt-4o"]:
-    st.warning("⚠️ Warning: Using this model will consume more tokens and may increase costs.")
+    # Step 3: Upload local PDFs
+    uploaded_files = st.file_uploader("Or upload local PDF files", type=["pdf"], accept_multiple_files=True)
 
+    # Step 4: Model choice
+    model_choice = st.radio("Choose OpenAI Model", ["gpt-3.5-turbo", "gpt-4", "gpt-4o"], horizontal=True)
+    if model_choice in ["gpt-4", "gpt-4o"]:
+        st.warning("⚠️ Using this model will consume more tokens and may increase costs.")
 
-# Step 5: Combine text from all PDFs
-combined_text = ""
-
-# PDFs from Drive
-for pdf in pdfs:
-    pdf_data = download_pdf_as_bytes(service, pdf['id'])
-    combined_text += f"\n\n--- {pdf['folder_name']} / {pdf['name']} ---\n"
-    combined_text += extract_text_from_pdf_bytes(pdf_data)
-
-# PDFs from Upload
-for uploaded_file in uploaded_files:
-    combined_text += f"\n\n--- uploaded / {uploaded_file.name} ---\n"
-    combined_text += extract_text_from_pdf_bytes(uploaded_file.read())
-
-# Step 6: Show preview + Ask
-if combined_text:
-    st.subheader("PDF Content Preview")
-    st.text_area("Extracted Text", value=combined_text[:2000], height=300)
-
+    # Step 5: User query input (always visible)
     user_input = st.text_input("What would you like to ask or do?")
 
-    if user_input:
+with col2:
+    # Step 6: Process and show
+    combined_text = ""
+
+    for pdf in pdfs:
+        pdf_data = download_pdf_as_bytes(service, pdf['id'])
+        combined_text += f"\n\n--- {pdf['folder_name']} / {pdf['name']} ---\n"
+        combined_text += extract_text_from_pdf_bytes(pdf_data)
+
+    for uploaded_file in uploaded_files:
+        combined_text += f"\n\n--- uploaded / {uploaded_file.name} ---\n"
+        combined_text += extract_text_from_pdf_bytes(uploaded_file.read())
+
+    if combined_text:
+        st.subheader("PDF Content Preview")
+        st.text_area("Extracted Text", value=combined_text[:2000], height=300)
+
+    if user_input and combined_text:
         with st.spinner("Thinking..."):
             response = client.chat.completions.create(
                 model=model_choice,
