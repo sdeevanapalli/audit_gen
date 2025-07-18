@@ -92,6 +92,10 @@ uploaded_files = st.file_uploader("Or upload local PDF files", type=["pdf"], acc
 # Step 4: Choose model
 model_choice = st.radio("Choose OpenAI Model", ["gpt-3.5-turbo", "gpt-4", "gpt-4o"], horizontal=True)
 
+if model_choice in ["gpt-4", "gpt-4o"]:
+    st.warning("⚠️ Warning: Using this model will consume more tokens and may increase costs.")
+
+
 # Step 5: Combine text from all PDFs
 combined_text = ""
 
