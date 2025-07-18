@@ -1,22 +1,25 @@
-import streamlit as st
-from PyPDF2 import PdfReader
 import os
+import io
+import json
+import atexit
+from dotenv import load_dotenv
+from PyPDF2 import PdfReader
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-import io
-from dotenv import load_dotenv
 from openai import OpenAI
+import streamlit as st
+from docx import Document
 
+# Load env
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID") or 'your-folder-id'
-
+MAIN_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")  # project#1 folder
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-
+# Write service account to file
 SERVICE_ACCOUNT_FILE = "service_account.json"
 with open(SERVICE_ACCOUNT_FILE, "w") as f:
     f.write(SERVICE_ACCOUNT_JSON)
@@ -29,9 +32,15 @@ def get_drive_service():
     )
     return build('drive', 'v3', credentials=creds)
 
-def list_pdfs(service):
+def list_subfolders(service, parent_id):
     results = service.files().list(
-        q=f"'{FOLDER_ID}' in parents and mimeType='application/pdf'",
+        q=f"'{parent_id}' in parents and mimeType='application/vnd.google-apps.folder'",
+        fields="files(id, name)").execute()
+    return results.get('files', [])
+
+def list_pdfs_in_folder(service, folder_id):
+    results = service.files().list(
+        q=f"'{folder_id}' in parents and mimeType='application/pdf'",
         fields="files(id, name)").execute()
     return results.get('files', [])
 
@@ -49,43 +58,76 @@ def extract_text_from_pdf_bytes(pdf_data):
     reader = PdfReader(io.BytesIO(pdf_data))
     return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
 
+def create_docx_from_text(text):
+    doc = Document()
+    for para in text.split("\n"):
+        doc.add_paragraph(para)
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf
 
+# UI
 st.title("Audit Assistant with OpenAI")
 
 service = get_drive_service()
-pdfs = list_pdfs(service)
 
-if not pdfs:
-    st.warning("No PDFs found in the folder.")
-else:
-    file_names = [file['name'] for file in pdfs]
-    selected_file_names = st.multiselect("Select PDF(s)", file_names)
+# Step 1: Choose subfolders inside project#1
+subfolders = list_subfolders(service, MAIN_FOLDER_ID)
+folder_names = [f['name'] for f in subfolders]
+selected_folder_names = st.multiselect("Select subfolder(s)", folder_names)
 
-    if selected_file_names:
-        combined_text = ""
-        for name in selected_file_names:
-            file_id = next(file['id'] for file in pdfs if file['name'] == name)
-            pdf_data = download_pdf_as_bytes(service, file_id)
-            combined_text += f"\n\n--- {name} ---\n"
-            combined_text += extract_text_from_pdf_bytes(pdf_data)
+# Step 2: Automatically collect all PDFs in selected subfolders
+pdfs = []
+for name in selected_folder_names:
+    folder_id = next(f['id'] for f in subfolders if f['name'] == name)
+    pdfs_in_folder = list_pdfs_in_folder(service, folder_id)
+    for pdf in pdfs_in_folder:
+        pdf['folder_name'] = name  # for clarity in output
+        pdfs.append(pdf)
 
-        st.subheader("PDF Content Preview")
-        st.text_area("Extracted Text", value=combined_text[:2000], height=300)
+# Step 3: Optionally upload local PDFs
+uploaded_files = st.file_uploader("Or upload local PDF files", type=["pdf"], accept_multiple_files=True)
 
-        user_input = st.text_input("What would you like to ask or do?")
+# Step 4: Choose model
+model_choice = st.radio("Choose OpenAI Model", ["gpt-3.5-turbo", "gpt-4", "gpt-4o"], horizontal=True)
 
-        if user_input:
-            with st.spinner("Thinking..."):
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",  # use gpt-4 if needed
-                    messages=[
-                        {"role": "system", "content": "You're an expert in auditing, compliance, and document comparison. Respond precisely to the user's query."},
-                        {"role": "user", "content": f"The following is content from selected PDF(s):\n{combined_text[:10000]}\n\nUser instruction:\n{user_input}"}
-                    ]
-                )
-                st.subheader("OpenAI's Response")
-                st.write(response.choices[0].message.content)
+# Step 5: Combine text from all PDFs
+combined_text = ""
 
+# PDFs from Drive
+for pdf in pdfs:
+    pdf_data = download_pdf_as_bytes(service, pdf['id'])
+    combined_text += f"\n\n--- {pdf['folder_name']} / {pdf['name']} ---\n"
+    combined_text += extract_text_from_pdf_bytes(pdf_data)
 
-import atexit
+# PDFs from Upload
+for uploaded_file in uploaded_files:
+    combined_text += f"\n\n--- uploaded / {uploaded_file.name} ---\n"
+    combined_text += extract_text_from_pdf_bytes(uploaded_file.read())
+
+# Step 6: Show preview + Ask
+if combined_text:
+    st.subheader("PDF Content Preview")
+    st.text_area("Extracted Text", value=combined_text[:2000], height=300)
+
+    user_input = st.text_input("What would you like to ask or do?")
+
+    if user_input:
+        with st.spinner("Thinking..."):
+            response = client.chat.completions.create(
+                model=model_choice,
+                messages=[
+                    {"role": "system", "content": "You're an expert in auditing, compliance, and document comparison. Respond precisely to the user's query."},
+                    {"role": "user", "content": f"The following is content from selected PDF(s):\n{combined_text[:10000]}\n\nUser instruction:\n{user_input}"}
+                ]
+            )
+            final_response = response.choices[0].message.content
+            st.subheader("OpenAI's Response")
+            st.write(final_response)
+
+            docx_buffer = create_docx_from_text(final_response)
+            st.download_button("Download as DOCX", data=docx_buffer, file_name="openai_response.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+# Cleanup temp file
 atexit.register(lambda: os.remove(SERVICE_ACCOUNT_FILE) if os.path.exists(SERVICE_ACCOUNT_FILE) else None)
