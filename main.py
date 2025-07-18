@@ -110,14 +110,15 @@ for uploaded_file in uploaded_files:
     combined_text += f"\n\n--- uploaded / {uploaded_file.name} ---\n"
     combined_text += extract_text_from_pdf_bytes(uploaded_file.read())
 
-# Step 6: Show preview + Ask
+# Step 6: Chatbox always visible
+st.subheader("PDF Content Preview (if any)")
 if combined_text:
-    st.subheader("PDF Content Preview")
     st.text_area("Extracted Text", value=combined_text[:2000], height=300)
 
-    user_input = st.text_input("What would you like to ask or do?")
+user_input = st.text_input("What would you like to ask or do?")
 
-    if user_input:
+if user_input:
+    if combined_text:
         with st.spinner("Thinking..."):
             response = client.chat.completions.create(
                 model=model_choice,
@@ -132,6 +133,8 @@ if combined_text:
 
             docx_buffer = create_docx_from_text(final_response)
             st.download_button("Download as DOCX", data=docx_buffer, file_name="openai_response.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    else:
+        st.warning("⚠️ Please select/upload at least one PDF to proceed.")
 
 # Cleanup temp file
 atexit.register(lambda: os.remove(SERVICE_ACCOUNT_FILE) if os.path.exists(SERVICE_ACCOUNT_FILE) else None)
