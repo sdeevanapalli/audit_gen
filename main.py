@@ -129,36 +129,46 @@ preset_queries = {
 }
 
 def process_query(query_to_send):
-    if not query_to_send:
-        st.warning("⚠️ Please enter a query or select a preset prompt.")
-        return
-    if not combined_text:
-        st.warning("⚠️ Please select or upload at least one TXT file to proceed.")
+    if not query_to_send or not combined_text:
+        st.warning("⚠️ Please enter a query and provide text.")
         return
 
     st.subheader("Response")
-    with st.spinner("Thinking..."):
+    with st.spinner("Processing in chunks..."):
         try:
             chunks = chunk_text(combined_text, max_chars=3000)
-            # ✅ Combine all chunks into one long prompt
-            full_combined_text = ""
-            for i, chunk in enumerate(chunks):
-                full_combined_text += f"\n\n[Content Chunk {i+1}]\n{chunk}"
+            chunk_summaries = []
 
-            # ✅ Send all at once as a single unified request
-            response = client.chat.completions.create(
+            # Step 1: Summarize each chunk individually with the user query context
+            for i, chunk in enumerate(chunks):
+                prompt = f"Analyze the following content chunk for this instruction:\n{query_to_send}\n\nContent chunk {i+1}:\n{chunk}"
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "You are an expert auditor. Provide a concise summary or key points related to the instruction."},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                chunk_summaries.append(response.choices[0].message.content)
+
+            # Step 2: Combine all chunk summaries, then ask for a single consolidated final output
+            combined_summaries = "\n\n---\n\n".join(chunk_summaries)
+            final_prompt = (
+                f"Based on the following summaries from content chunks, provide a single, comprehensive response "
+                f"to this instruction:\n{query_to_send}\n\nSummaries:\n{combined_summaries}"
+            )
+            final_response = client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "You are an expert in auditing, compliance, and document comparison. Provide a single, consolidated response to the user’s instruction after analyzing the full content."},
-                    {"role": "user", "content": f"{full_combined_text}\n\nUser instruction:\n{query_to_send}"}
+                    {"role": "system", "content": "You are an expert auditor. Provide a detailed, consolidated output based on the chunk summaries."},
+                    {"role": "user", "content": final_prompt}
                 ]
             )
 
-            final_response = response.choices[0].message.content
-            st.write(final_response)
+            final_text = final_response.choices[0].message.content
+            st.write(final_text)
 
-            # ✅ DOCX download
-            docx_buffer = create_docx_from_text(final_response)
+            docx_buffer = create_docx_from_text(final_text)
             st.download_button(
                 "Download as DOCX",
                 data=docx_buffer,
@@ -167,6 +177,7 @@ def process_query(query_to_send):
             )
         except Exception as e:
             st.error(f"❌ OpenAI request failed: {e}")
+
 
 st.subheader("Quick Prompt")
 col1, col2, col3 = st.columns(3)
