@@ -140,22 +140,24 @@ def process_query(query_to_send):
     with st.spinner("Thinking..."):
         try:
             chunks = chunk_text(combined_text, max_chars=3000)
-            all_responses = []
-            progress_bar = st.progress(0)
-            total = len(chunks)
+            # ✅ Combine all chunks into one long prompt
+            full_combined_text = ""
             for i, chunk in enumerate(chunks):
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": "You're an expert in auditing, compliance, and document comparison. Respond precisely to the user's query."},
-                        {"role": "user", "content": f"Content chunk {i+1}:\n{chunk}\n\nUser instruction:\n{query_to_send}"}
-                    ]
-                )
-                all_responses.append(response.choices[0].message.content)
-                progress_bar.progress((i + 1) / total)
-            final_response = "\n\n---\n\n".join(all_responses)
+                full_combined_text += f"\n\n[Content Chunk {i+1}]\n{chunk}"
+
+            # ✅ Send all at once as a single unified request
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are an expert in auditing, compliance, and document comparison. Provide a single, consolidated response to the user’s instruction after analyzing the full content."},
+                    {"role": "user", "content": f"{full_combined_text}\n\nUser instruction:\n{query_to_send}"}
+                ]
+            )
+
+            final_response = response.choices[0].message.content
             st.write(final_response)
 
+            # ✅ DOCX download
             docx_buffer = create_docx_from_text(final_response)
             st.download_button(
                 "Download as DOCX",
