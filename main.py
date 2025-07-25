@@ -1,61 +1,85 @@
 import os
 import io
-import json
-import atexit
 import tempfile
+import atexit
+import json
+
+import streamlit as st
+from openai import OpenAI
+from docx import Document
+from pdfminer.high_level import extract_text as extract_pdf_text
 from dotenv import load_dotenv
+
+import tiktoken
+
+# GOOGLE DRIVE
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-from openai import OpenAI
-import streamlit as st
-from docx import Document
 
-# Load env
+# CHROMADB VECTOR
+import chromadb
+from chromadb.config import Settings
+
+# ENV CONFIGS AND BASIC SETUP
+
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-MAIN_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+API_KEY = os.getenv('OPENAI_API_KEY')
+SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
+DRIVE_MAIN_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
 
-if not OPENAI_API_KEY:
-    st.error("❌ OpenAI API key not found in environment.")
-    st.stop()
+st.set_page_config(page_title="Internal Audit Officer", layout="wide")
 
-if not SERVICE_ACCOUNT_JSON or not MAIN_FOLDER_ID:
-    st.error("❌ Missing Google Drive credentials or folder ID.")
-    st.stop()
+MODEL_MAP = {
+    "Alpha (provides a brief and concise summary; optimized for fast responses)": "gpt-3.5-turbo",
+    "Beta (offers a balanced output combining brevity and detail)": "gpt-4",
+    "Gamma (delivers comprehensive and detailed analysis; may take longer to respond)": "gpt-4o"
+}
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+PRESET_QUERIES = {
+    "Finance Concurrence": "Please examine the uploaded document according to govt guidelines and GFR uploaded in the google drive and selected here, and give finance concurrence accordingly.",
+    "Payment Proposal": "Please create a payment proposal for the uploaded document according to the template named payment proposal.pdf, in line with the guidelines document and GFR which are uploaded on google drive.",
+    "Internal Audit": "Please draft an internal audit document for the uploaded proposal according to the internal audit manual and other guidelines which are uploaded on the google drive accordingly."
+}
 
-try:
+CONTEXT_CHUNKS = 8
+CHUNK_CHAR_LIMIT = 1000
+PROPOSAL_CHAR_LIMIT = 2200
+TOKEN_BUDGET = 8000
+MAX_RESPONSE_TOKENS = 1024
+
+client = OpenAI(api_key=API_KEY)
+chroma_client = chromadb.Client(Settings(persist_directory='rag_db'))
+collection = chroma_client.get_or_create_collection("rulebook_rag")
+
+def count_tokens(text, model="gpt-4o"):
+    enc = tiktoken.encoding_for_model(model)
+    return len(enc.encode(text))
+
+def get_drive_service():
     parsed_json = json.loads(SERVICE_ACCOUNT_JSON)
     parsed_json["private_key"] = parsed_json["private_key"].replace("\\n", "\n")
     temp_service_file = tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False)
     json.dump(parsed_json, temp_service_file)
     temp_service_file.close()
     SERVICE_ACCOUNT_FILE = temp_service_file.name
-except Exception as e:
-    st.error(f"❌ Failed to process service account key: {e}")
-    st.stop()
-
-atexit.register(lambda: os.remove(SERVICE_ACCOUNT_FILE) if os.path.exists(SERVICE_ACCOUNT_FILE) else None)
-
-def get_drive_service():
+    atexit.register(lambda: os.remove(SERVICE_ACCOUNT_FILE) if os.path.exists(SERVICE_ACCOUNT_FILE) else None)
     creds = service_account.Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE,
-        scopes=['https://www.googleapis.com/auth/drive.readonly']
+        scopes=['https://www.googleapis.com/auth/drive.readonly'],
     )
     return build('drive', 'v3', credentials=creds)
 
 def list_subfolders(service, parent_id):
     results = service.files().list(
-        q=f"'{parent_id}' in parents and mimeType='application/vnd.google-apps.folder'",
+        q=f"'{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
         fields="files(id, name)").execute()
     return results.get('files', [])
 
 def list_txt_in_folder(service, folder_id):
     results = service.files().list(
-        q=f"'{folder_id}' in parents and mimeType='text/plain'",
+        q=f"'{folder_id}' in parents and mimeType='text/plain' and trashed=false",
+        pageSize=500,
         fields="files(id, name)").execute()
     return results.get('files', [])
 
@@ -67,171 +91,224 @@ def download_txt_as_text(service, file_id):
     while not done:
         _, done = downloader.next_chunk()
     fh.seek(0)
-    return fh.read().decode('utf-8')
+    return fh.read().decode('utf-8', errors='ignore')
 
-def create_docx_from_text(text):
-    doc = Document()
-    for para in text.split("\n"):
-        doc.add_paragraph(para)
-    buf = io.BytesIO()
-    doc.save(buf)
-    buf.seek(0)
-    return buf
+def parse_uploaded_file(uploaded_file):
+    fname = uploaded_file.name.lower()
+    if fname.endswith('.txt'):
+        return uploaded_file.read().decode('utf-8', errors='ignore')
+    elif fname.endswith('.docx'):
+        doc = Document(io.BytesIO(uploaded_file.read()))
+        return "\n".join([para.text for para in doc.paragraphs])
+    elif fname.endswith('.pdf'):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(uploaded_file.read())
+            tmp.close()
+            text = extract_pdf_text(tmp.name)
+            os.remove(tmp.name)
+            return text
+    else:
+        return ""
 
-def chunk_text(text, max_chars=3000):
-    paragraphs = text.split("\n\n")
-    chunks = []
-    current_chunk = ""
-    for para in paragraphs:
-        if len(current_chunk) + len(para) + 2 > max_chars:
-            if current_chunk:
-                chunks.append(current_chunk)
-                current_chunk = ""
-        current_chunk += para + "\n\n"
-    if current_chunk:
-        chunks.append(current_chunk)
+def embed_text(text):
+    text = text.strip()[:2000]
+    resp = client.embeddings.create(
+        model="text-embedding-ada-002",
+        input=text,
+    )
+    return resp.data[0].embedding
+
+def chunk_text(text, max_chars=CHUNK_CHAR_LIMIT):
+    paras = [p.strip() for p in text.split('\n\n') if len(p.strip()) > 0]
+    chunks, chunk = [], ''
+    for para in paras:
+        if len(chunk) + len(para) + 2 > max_chars:
+            if chunk:
+                chunks.append(chunk)
+                chunk = ''
+        chunk += para + '\n\n'
+    if chunk:
+        chunks.append(chunk)
     return chunks
 
-# UI Layout
-col_1, col_logo, col_2 = st.columns([1, 6, 1])
-with col_logo:
-    st.image("Masthead.png", width=500)
+def index_drive_files(service, files, subfolder_name):
+    docs, metas, ids = [], [], []
+    for file in files:
+        raw = download_txt_as_text(service, file['id'])
+        for ci, chunk in enumerate(chunk_text(raw)):
+            docs.append(chunk)
+            metas.append({'subfolder': subfolder_name, 'filename': file['name']})
+            ids.append(f"{subfolder_name}-{file['name']}-{ci}")
+    if docs:
+        embeds = [embed_text(doc) for doc in docs]
+        collection.add(
+            documents=docs,
+            embeddings=embeds,
+            metadatas=metas,
+            ids=ids
+        )
+    return len(docs)
 
-st.title("Internal Audit Officer (IAO)")
+def retrieve_context(query, top_k=CONTEXT_CHUNKS, max_chunk_chars=CHUNK_CHAR_LIMIT):
+    q_embed = embed_text(query)
+    results = collection.query(
+        query_embeddings=[q_embed],
+        n_results=top_k
+    )
+    docs = [doc[:max_chunk_chars] for doc in results['documents'][0]]
+    metas = results['metadatas'][0]
+    return docs, metas
 
-service = get_drive_service()
+def fill_template(proposal_text, user_query, model_name):
+    proposal_text_trimmed = proposal_text[:PROPOSAL_CHAR_LIMIT]
+    rag_query = user_query + "\n\nProposal:\n" + proposal_text_trimmed
+    contexts, metas = retrieve_context(rag_query)
+    context_block = "\n\n".join([f"{m['subfolder']}/{m['filename']}:\n{c}" for c, m in zip(contexts, metas)])
+    prompt = f"""You are an expert internal auditor.
+Using ONLY the following reference guidelines:
 
-st.subheader("Reference Document Selection")
+{context_block}
 
-subfolders = list_subfolders(service, MAIN_FOLDER_ID)
-name_to_id = {f['name']: f['id'] for f in subfolders}
-selected_folder_names = st.multiselect("Select Set of Documents", list(name_to_id.keys()))
+Now, per the following instruction and proposal document, generate an audit response (or fill the template as required):
 
-txts = []
-if selected_folder_names:
-    for name in selected_folder_names:
-        folder_id = name_to_id[name]
-        txts_in_folder = list_txt_in_folder(service, folder_id)
-        for txt in txts_in_folder:
-            txt['folder_name'] = name
-            txts.append(txt)
+Instruction:
+{user_query}
 
-uploaded_files = st.file_uploader("Upload Proposal Document", type=["txt"], accept_multiple_files=True)
+Proposal document content:
+{proposal_text_trimmed}
+"""
+    input_tokens = count_tokens(prompt, model_name)
+    if input_tokens > (TOKEN_BUDGET - MAX_RESPONSE_TOKENS):
+        st.warning(f"Prompt ({input_tokens} tokens) too long for {model_name}. Trimming context.")
+        for i in range(len(contexts)):
+            trimmed_contexts = contexts[:i+1]
+            block = "\n\n".join([f"{metas[j]['subfolder']}/{metas[j]['filename']}:\n{contexts[j]}" for j in range(i+1)])
+            curr_prompt = f"""You are an expert internal auditor.
+Using ONLY the following reference guidelines:
 
-# Preset prompts (stored in hidden session_state)
-if "preset_prompt" not in st.session_state:
-    st.session_state["preset_prompt"] = ""
+{block}
 
-preset_queries = {
-    "Finance Concurrence": "Please examine the uploaded document according to govt guidelines and GFR, and give finance concurrence.",
-    "Payment Proposal": "Please create a payment proposal for the uploaded document according to the template named payment proposal.pdf, in line with the guidelines document and GFR.",
-    "Internal Audit": "Please draft an internal audit document for the uploaded proposal according to the internal audit manual and other guidelines."
-}
+Now, per the following instruction and proposal document, generate an audit response (or fill the template as required):
 
-def process_query(query_to_send):
-    if not query_to_send or not combined_text:
-        st.warning("⚠️ Please enter a query and provide text.")
-        return
+Instruction:
+{user_query}
 
-    st.subheader("Response")
-    with st.spinner("Processing in chunks..."):
-        try:
-            chunks = chunk_text(combined_text, max_chars=3000)
-            chunk_summaries = []
+Proposal document content:
+{proposal_text_trimmed}
+"""
+            if count_tokens(curr_prompt, model_name) < (TOKEN_BUDGET - MAX_RESPONSE_TOKENS):
+                context_block = block
+                prompt = curr_prompt
+                break
+        else:
+            st.error("Unable to fit context within model limits. Use a shorter proposal and/or shorter prompt.")
+            return "Error: Unable to fit input within model token limits."
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": "You are an expert auditor and policy assistant. You have to give your output like a human, in the user point of view. The user will be using you to do his work"},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=MAX_RESPONSE_TOKENS,
+    )
+    return response.choices[0].message.content
 
-            # Step 1: Summarize each chunk individually with the user query context
-            for i, chunk in enumerate(chunks):
-                prompt = f"Analyze the following content chunk for this instruction:\n{query_to_send}\n\nContent chunk {i+1}:\n{chunk}"
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": "You are an expert auditor. Provide a concise summary or key points related to the instruction."},
-                        {"role": "user", "content": prompt}
-                    ]
-                )
-                chunk_summaries.append(response.choices[0].message.content)
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    st.image("Masthead.png", use_container_width=True)
+    st.markdown("<h1 style='text-align: center;'>Internal Audit Officer (IAO)</h1>", unsafe_allow_html=True)
 
-            # Step 2: Combine all chunk summaries, then ask for a single consolidated final output
-            combined_summaries = "\n\n---\n\n".join(chunk_summaries)
-            final_prompt = (
-                f"Based on the following summaries from content chunks, provide a single, comprehensive response "
-                f"to this instruction:\n{query_to_send}\n\nSummaries:\n{combined_summaries}"
+try:
+    drive_service = get_drive_service()
+except Exception as e:
+    st.error(f"Google Drive authentication/setup failed: {e}")
+    st.stop()
+
+st.subheader("1. Select Reference Subfolders")
+subfolders = list_subfolders(drive_service, DRIVE_MAIN_FOLDER_ID)
+if not subfolders:
+    st.warning("No subfolders found in project#1.")
+    st.stop()
+subfolder_names = [f['name'] for f in subfolders]
+subfolder_map = {f['name']: f['id'] for f in subfolders}
+
+selected_subfolders = st.multiselect("Choose one or more subfolders", subfolder_names)
+
+if selected_subfolders:
+    if st.button(f"Index reference files in: {', '.join(selected_subfolders)}"):
+        total_chunks = 0
+        with st.spinner("Indexing files for fast search..."):
+            for subfolder_name in selected_subfolders:
+                files_in_sub = list_txt_in_folder(drive_service, subfolder_map[subfolder_name])
+                n_chunks = index_drive_files(drive_service, files_in_sub, subfolder_name)
+                total_chunks += n_chunks
+            st.success(f"Indexed {len(selected_subfolders)} subfolders, total {total_chunks} chunks added to RAG DB.")
+else:
+    st.info("Please select at least one subfolder to index.")
+
+st.subheader("2. Upload Proposal (Your Document)")
+prop_file = st.file_uploader(
+    "Upload your proposal or template (.txt, .docx, .pdf)", type=["txt", "docx", "pdf"]
+)
+proposal_text = ""
+if prop_file:
+    with st.spinner("Parsing proposal..."):
+        proposal_text = parse_uploaded_file(prop_file)
+        if len(proposal_text) > PROPOSAL_CHAR_LIMIT:
+            st.warning(
+                f"Proposal is large ({len(proposal_text)} chars). Only the first {PROPOSAL_CHAR_LIMIT} characters will be used."
             )
-            final_response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are an expert auditor. Provide a detailed, consolidated output based on the chunk summaries."},
-                    {"role": "user", "content": final_prompt}
-                ]
-            )
-
-            final_text = final_response.choices[0].message.content
-            st.write(final_text)
-
-            docx_buffer = create_docx_from_text(final_text)
-            st.download_button(
-                "Download as DOCX",
-                data=docx_buffer,
-                file_name="openai_response.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
-        except Exception as e:
-            st.error(f"❌ OpenAI request failed: {e}")
-
-
-st.subheader("Quick Prompt")
+        st.info(f"Uploaded proposal has approx. {len(proposal_text)//5} words.")
+st.subheader("3. Query")
+quick_prompt = None
 col1, col2, col3 = st.columns(3)
-quick_prompt_triggered = False
 with col1:
     if st.button("Finance Concurrence"):
-        st.session_state["preset_prompt"] = preset_queries["Finance Concurrence"]
-        quick_prompt_triggered = True
+        quick_prompt = PRESET_QUERIES["Finance Concurrence"]
 with col2:
     if st.button("Payment Proposal"):
-        st.session_state["preset_prompt"] = preset_queries["Payment Proposal"]
-        quick_prompt_triggered = True
+        quick_prompt = PRESET_QUERIES["Payment Proposal"]
 with col3:
     if st.button("Internal Audit"):
-        st.session_state["preset_prompt"] = preset_queries["Internal Audit"]
-        quick_prompt_triggered = True
+        quick_prompt = PRESET_QUERIES["Internal Audit"]
 
-# Prepare combined text from selected/uploaded TXT files
-combined_text = ""
-for txt in txts:
-    txt_data = download_txt_as_text(service, txt['id'])
-    combined_text += f"\n\n--- {txt['folder_name']} / {txt['name']} ---\n"
-    combined_text += txt_data
 
-for uploaded_file in uploaded_files:
-    combined_text += f"\n\n--- uploaded / {uploaded_file.name} ---\n"
-    combined_text += uploaded_file.read().decode('utf-8')
+st.subheader("4. Select Language Model")
+cols = st.columns(len(MODEL_MAP))
+for i, (label, model) in enumerate(MODEL_MAP.items()):
+    if cols[i].button(label):
+        st.session_state.selected_model = model
+        st.session_state.selected_model_label = label
 
-# Model selection
-model_choice = st.radio("Select Model", ["alpha", "beta", "gamma"], horizontal=True)
-if model_choice == 'alpha':
-    model = "gpt-3.5-turbo"
-elif model_choice == 'beta':
-    model = 'gpt-4'
-elif model_choice == 'gamma':
-    model = 'gpt-4o'
+# Ensure default model and label are set
+if "selected_model" not in st.session_state:
+    st.session_state.selected_model = "gpt-3.5-turbo"
+if "selected_model_label" not in st.session_state:
+    st.session_state.selected_model_label = "Alpha (provides a brief and concise summary; optimized for fast responses)"
 
-if quick_prompt_triggered:
-    process_query(st.session_state["preset_prompt"])
+# Display current model selection
+st.success(f"Model selected: {st.session_state.selected_model_label}")
+selected_model = st.session_state.selected_model  # Always available after this point
 
-user_input = st.text_area(
-    "Type your Query Here",
-    height=140,
-    placeholder="Type your query here..."
-)
+# Quick Prompt Execution
+if proposal_text and quick_prompt:
+    st.info("Quick prompt selected, generating response...")
+    output = fill_template(proposal_text, quick_prompt, selected_model)
+    st.subheader("Result")
+    st.write(output)
+    st.download_button("Download response as TXT", output, file_name="audit_response.txt", mime="text/plain")
 
-submitted = st.button("🔍 Submit (Ctrl/Cmd + Enter)")
+st.subheader("5. Custom Query")
+user_query = st.text_area("Or enter a custom query", value=st.session_state.get("user_query", ""), height=80)
 
-if submitted:
-    process_query(user_input.strip())
-
-if not (submitted or quick_prompt_triggered):
-    if combined_text:
-        st.subheader("Content Preview (Before Search)")
-        st.text_area("Extracted Text (max. 2000 char)", value=combined_text[:2000], height=300)
-    else:
-        st.info("No TXT content to preview yet.")
+if proposal_text and user_query:
+    if st.button("Generate Response"):
+        with st.spinner("Working..."):
+            output = fill_template(proposal_text, user_query, selected_model)
+        st.subheader("Result")
+        st.write(output)
+        st.download_button("Download response as TXT", output, file_name="audit_response.txt", mime="text/plain")
+elif not proposal_text:
+    st.info("Upload a proposal document to enable generation.")
+elif not user_query:
+    st.info("Enter a query or use a Quick Prompt to generate the response.")
