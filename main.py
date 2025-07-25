@@ -3,8 +3,8 @@ import io
 import tempfile
 import atexit
 import json
-
 import streamlit as st
+
 from openai import OpenAI
 from docx import Document
 from pdfminer.high_level import extract_text as extract_pdf_text
@@ -17,21 +17,22 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 import sys
+
+# For ChromaDB with DuckDB backend
 try:
     import pysqlite3
     sys.modules["sqlite3"] = pysqlite3
 except ImportError:
     pass
 
-# ENV CONFIGS AND BASIC SETUP
+import chromadb
+from chromadb.config import Settings
+
+# --------- ENV CONFIG AND SETUP -------
 load_dotenv()
-API_KEY = os.getenv('OPENAI_API_KEY')
+API_KEY = os.getenv("OPENAI_API_KEY")
 SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
 DRIVE_MAIN_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
-
-PINECONE_API_KEY = os.getenv('PINECONE_API_KEY')
-PINECONE_ENV = os.getenv('PINECONE_ENV')
-PINECONE_INDEX_NAME = "rulebook-rag"
 
 st.set_page_config(page_title="Internal Audit Officer", layout="wide")
 
@@ -55,21 +56,16 @@ MAX_RESPONSE_TOKENS = 1024
 
 client = OpenAI(api_key=API_KEY)
 
-from pinecone import Pinecone, ServerlessSpec
+chroma_client = chromadb.Client(Settings())
+collection = chroma_client.get_or_create_collection(name="guidelines")
 
-pc = Pinecone(api_key=PINECONE_API_KEY)
-if PINECONE_INDEX_NAME not in pc.list_indexes().names():
-    pc.create_index(
-        name=PINECONE_INDEX_NAME,
-        dimension=1536,
-        metric='cosine',
-        spec=ServerlessSpec(cloud='aws', region='us-east-1')
-    )
-
-index = pc.Index(PINECONE_INDEX_NAME)
+# ---------------- HELPERS --------------
 
 def count_tokens(text, model="gpt-4o"):
-    enc = tiktoken.encoding_for_model(model)
+    try:
+        enc = tiktoken.encoding_for_model(model)
+    except Exception:
+        enc = tiktoken.get_encoding("cl100k_base")
     return len(enc.encode(text))
 
 def get_drive_service():
@@ -112,17 +108,26 @@ def download_txt_as_text(service, file_id):
 def parse_uploaded_file(uploaded_file):
     fname = uploaded_file.name.lower()
     if fname.endswith('.txt'):
-        return uploaded_file.read().decode('utf-8', errors='ignore')
+        try:
+            return uploaded_file.read().decode('utf-8', errors='ignore')
+        except Exception:
+            return ""
     elif fname.endswith('.docx'):
-        doc = Document(io.BytesIO(uploaded_file.read()))
-        return "\n".join([para.text for para in doc.paragraphs])
+        try:
+            doc = Document(io.BytesIO(uploaded_file.read()))
+            return "\n".join([para.text for para in doc.paragraphs])
+        except Exception:
+            return ""
     elif fname.endswith('.pdf'):
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(uploaded_file.read())
-            tmp.close()
-            text = extract_pdf_text(tmp.name)
-            os.remove(tmp.name)
-            return text
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(uploaded_file.read())
+                tmp.close()
+                text = extract_pdf_text(tmp.name)
+                os.remove(tmp.name)
+                return text
+        except Exception:
+            return ""
     else:
         return ""
 
@@ -148,56 +153,38 @@ def chunk_text(text, max_chars=CHUNK_CHAR_LIMIT):
     return chunks
 
 def index_drive_files(service, files, subfolder_name):
-    docs, metas, ids, embeds = [], [], [], []
+    docs, ids, embeds = [], [], []
     for file in files:
         raw = download_txt_as_text(service, file['id'])
         for ci, chunk in enumerate(chunk_text(raw)):
             chunk = chunk.strip()
             if not chunk:
                 continue
+            doc_id = f"{subfolder_name}-{file['name']}-{ci}"
             docs.append(chunk)
-            metas.append({'subfolder': subfolder_name, 'filename': file['name'], 'text': chunk})
-            ids.append(f"{subfolder_name}-{file['name']}-{ci}")
+            ids.append(doc_id)
+            embeds.append(embed_text(chunk))
     if not docs:
         return 0
-
-    embeds = [embed_text(doc) for doc in docs]
-    # Verify embedding dimensions
-    for i, e in enumerate(embeds):
-        if len(e) != 1536:
-            raise ValueError(f"Embedding vector length mismatch at index {i}: {len(e)} != 1536")
-
-    batch_size = 100  # safe batch size
-    total_upserted = 0
-    for i in range(0, len(docs), batch_size):
-        batch_ids = ids[i:i+batch_size]
-        batch_embeds = embeds[i:i+batch_size]
-        batch_metas = metas[i:i+batch_size]
-        to_upsert = [(batch_ids[j], batch_embeds[j], batch_metas[j]) for j in range(len(batch_ids))]
-        index.upsert(vectors=to_upsert)
-        total_upserted += len(to_upsert)
-    return total_upserted
-
+    collection.add(
+        documents=docs,
+        embeddings=embeds,
+        ids=ids
+    )
+    return len(docs)
 
 def retrieve_context(query, top_k=CONTEXT_CHUNKS, max_chunk_chars=CHUNK_CHAR_LIMIT):
     q_embed = embed_text(query)
-    results = index.query(vector=q_embed, top_k=top_k, include_metadata=True)
-    docs, metas = [], []
-    for match in results.matches:
-        doc_text = match.metadata.get("text", "")
-        if not doc_text and "subfolder" in match.metadata and "filename" in match.metadata:
-            doc_text = f"Reference from {match.metadata['subfolder']}/{match.metadata['filename']}"
-        docs.append(doc_text[:max_chunk_chars])
-        metas.append(match.metadata)
-    return docs, metas
+    results = collection.query(query_embeddings=[q_embed], n_results=top_k)
+    doc_results = results.get('documents', [[]])
+    docs = [doc[:max_chunk_chars] for doc in doc_results[0]]
+    return docs, [{} for _ in docs]
 
 def fill_template(proposal_text, user_query, model_name):
     proposal_text_trimmed = proposal_text[:PROPOSAL_CHAR_LIMIT]
     rag_query = user_query + "\n\nProposal:\n" + proposal_text_trimmed
     contexts, metas = retrieve_context(rag_query)
-    context_block = "\n\n".join([
-        f"{m.get('subfolder', 'unknown')}/{m.get('filename', 'unknown')}:\n{c}" for c, m in zip(contexts, metas)
-    ])
+    context_block = "\n\n".join([f"Context {i+1}:\n{c}" for i, c in enumerate(contexts)])
     prompt = f"""You are an expert internal auditor.
 Using ONLY the following reference guidelines:
 
@@ -216,7 +203,7 @@ Proposal document content:
         st.warning(f"Prompt ({input_tokens} tokens) too long for {model_name}. Trimming context.")
         for i in range(len(contexts)):
             trimmed_contexts = contexts[:i+1]
-            block = "\n\n".join([f"{metas[j].get('subfolder','unknown')}/{metas[j].get('filename','unknown')}:\n{contexts[j]}" for j in range(i+1)])
+            block = "\n\n".join([f"Context {j+1}:\n{contexts[j]}" for j in range(i+1)])
             curr_prompt = f"""You are an expert internal auditor.
 Using ONLY the following reference guidelines:
 
@@ -237,21 +224,24 @@ Proposal document content:
         else:
             st.error("Unable to fit context within model limits. Use a shorter proposal and/or shorter prompt.")
             return "Error: Unable to fit input within model token limits."
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[
-            {"role": "system", "content": "You are an expert auditor and policy assistant. You have to give your output like a human, in the user point of view. The user will be using you to do his work"},
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=MAX_RESPONSE_TOKENS,
-    )
-    return response.choices[0].message.content
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": "You are an expert auditor and policy assistant. You have to give your output like a human, in the user point of view. The user will be using you to do his work"},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=MAX_RESPONSE_TOKENS,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"OpenAI API Error: {e}")
+        return "An error occurred in generating the response."
 
-# Streamlit UI setup continues below with unchanged logic from original code...
-# Due to length, continuing in next message if required.
+# ----------- UI LAYOUT -----------------
 
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
+colx1, colx2, colx3 = st.columns([1,2,1])
+with colx2:
     st.image("Masthead.png", use_container_width=True)
     st.markdown("<h1 style='text-align: center;'>Internal Audit Officer (IAO)</h1>", unsafe_allow_html=True)
 
@@ -261,10 +251,11 @@ except Exception as e:
     st.error(f"Google Drive authentication/setup failed: {e}")
     st.stop()
 
+# -------- Subfolder Selection ------------
 st.subheader("1. Select Reference Subfolders")
 subfolders = list_subfolders(drive_service, DRIVE_MAIN_FOLDER_ID)
 if not subfolders:
-    st.warning("No subfolders found in project#1.")
+    st.warning("No subfolders found in project.")
     st.stop()
 subfolder_names = [f['name'] for f in subfolders]
 subfolder_map = {f['name']: f['id'] for f in subfolders}
@@ -283,10 +274,11 @@ if selected_subfolders:
 else:
     st.info("Please select at least one subfolder to index.")
 
+# -------- Proposal Upload Section ----------
 st.subheader("2. Upload Proposal (Your Document)")
 prop_file = st.file_uploader(
-    "Upload your proposal or template (.txt, .docx, .pdf)", type=["txt", "docx", "pdf"]
-)
+    "Upload your proposal or template (.txt, .docx, .pdf)", type=["txt", "docx", "pdf"])
+
 proposal_text = ""
 if prop_file:
     with st.spinner("Parsing proposal..."):
@@ -295,48 +287,60 @@ if prop_file:
             st.warning(
                 f"Proposal is large ({len(proposal_text)} chars). Only the first {PROPOSAL_CHAR_LIMIT} characters will be used."
             )
-        st.info(f"Uploaded proposal has approx. {len(proposal_text)//5} words.")
+        st.info(f"Uploaded proposal has approx. {max(1, len(proposal_text)//5)} words.")
 
+# ------- Quick Prompts Section ------------
 st.subheader("3. Query")
-quick_prompt = None
-col1, col2, col3 = st.columns(3)
-with col1:
-    if st.button("Finance Concurrence"):
-        quick_prompt = PRESET_QUERIES["Finance Concurrence"]
-with col2:
-    if st.button("Payment Proposal"):
-        quick_prompt = PRESET_QUERIES["Payment Proposal"]
-with col3:
-    if st.button("Internal Audit"):
-        quick_prompt = PRESET_QUERIES["Internal Audit"]
 
+if "quick_prompt" not in st.session_state:
+    st.session_state.quick_prompt = None
+
+quick_col1, quick_col2, quick_col3 = st.columns(3)
+with quick_col1:
+    if st.button("Finance Concurrence"):
+        st.session_state.quick_prompt = PRESET_QUERIES["Finance Concurrence"]
+with quick_col2:
+    if st.button("Payment Proposal"):
+        st.session_state.quick_prompt = PRESET_QUERIES["Payment Proposal"]
+with quick_col3:
+    if st.button("Internal Audit"):
+        st.session_state.quick_prompt = PRESET_QUERIES["Internal Audit"]
+
+quick_prompt = st.session_state.quick_prompt
+
+# --------- Language Model Selection ---------
 st.subheader("4. Select Language Model")
-cols = st.columns(len(MODEL_MAP))
+model_cols = st.columns(len(MODEL_MAP))
 for i, (label, model) in enumerate(MODEL_MAP.items()):
-    if cols[i].button(label):
+    if model_cols[i].button(label):
         st.session_state.selected_model = model
         st.session_state.selected_model_label = label
 
-# Ensure default model and label are set
 if "selected_model" not in st.session_state:
     st.session_state.selected_model = "gpt-3.5-turbo"
 if "selected_model_label" not in st.session_state:
     st.session_state.selected_model_label = "Alpha (provides a brief and concise summary; optimized for fast responses)"
 
-# Display current model selection
 st.success(f"Model selected: {st.session_state.selected_model_label}")
-selected_model = st.session_state.selected_model  # Always available after this point
+selected_model = st.session_state.selected_model
 
-# Quick Prompt Execution
+# ----- Quick Prompt Execution -----------
 if proposal_text and quick_prompt:
     st.info("Quick prompt selected, generating response...")
     output = fill_template(proposal_text, quick_prompt, selected_model)
     st.subheader("Result")
     st.write(output)
     st.download_button("Download response as TXT", output, file_name="audit_response.txt", mime="text/plain")
+    st.session_state.quick_prompt = None
 
+# ----- Custom Query Section -----------
 st.subheader("5. Custom Query")
+if "user_query" not in st.session_state:
+    st.session_state.user_query = ""
+
 user_query = st.text_area("Or enter a custom query", value=st.session_state.get("user_query", ""), height=80)
+if user_query != st.session_state.get("user_query", ""):
+    st.session_state.user_query = user_query
 
 if proposal_text and user_query:
     if st.button("Generate Response"):
@@ -347,5 +351,5 @@ if proposal_text and user_query:
         st.download_button("Download response as TXT", output, file_name="audit_response.txt", mime="text/plain")
 elif not proposal_text:
     st.info("Upload a proposal document to enable generation.")
-elif not user_query:
+elif not user_query and not quick_prompt:
     st.info("Enter a query or use a Quick Prompt to generate the response.")
