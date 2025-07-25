@@ -49,7 +49,7 @@ TOKEN_BUDGET = 8000
 MAX_RESPONSE_TOKENS = 1024
 
 client = OpenAI(api_key=API_KEY)
-chroma_client = chromadb.Client(Settings(persist_directory='rag_db'))
+chroma_client = chromadb.Client(Settings())
 collection = chroma_client.get_or_create_collection("rulebook_rag")
 
 def count_tokens(text, model="gpt-4o"):
