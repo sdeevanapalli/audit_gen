@@ -16,18 +16,6 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-import sys
-
-# For ChromaDB with DuckDB backend
-try:
-    import pysqlite3
-    sys.modules["sqlite3"] = pysqlite3
-except ImportError:
-    pass
-
-import chromadb
-from chromadb.config import Settings
-
 # --------- ENV CONFIG AND SETUP -------
 load_dotenv()
 API_KEY = os.getenv("OPENAI_API_KEY")
@@ -55,9 +43,6 @@ TOKEN_BUDGET = 8000
 MAX_RESPONSE_TOKENS = 1024
 
 client = OpenAI(api_key=API_KEY)
-
-chroma_client = chromadb.Client(Settings())
-collection = chroma_client.get_or_create_collection(name="guidelines")
 
 # ---------------- HELPERS --------------
 
@@ -131,113 +116,6 @@ def parse_uploaded_file(uploaded_file):
     else:
         return ""
 
-def embed_text(text):
-    text = text.strip()[:2000]
-    resp = client.embeddings.create(
-        model="text-embedding-ada-002",
-        input=text,
-    )
-    return resp.data[0].embedding
-
-def chunk_text(text, max_chars=CHUNK_CHAR_LIMIT):
-    paras = [p.strip() for p in text.split('\n\n') if len(p.strip()) > 0]
-    chunks, chunk = [], ''
-    for para in paras:
-        if len(chunk) + len(para) + 2 > max_chars:
-            if chunk:
-                chunks.append(chunk)
-                chunk = ''
-        chunk += para + '\n\n'
-    if chunk:
-        chunks.append(chunk)
-    return chunks
-
-def index_drive_files(service, files, subfolder_name):
-    docs, ids, embeds = [], [], []
-    for file in files:
-        raw = download_txt_as_text(service, file['id'])
-        for ci, chunk in enumerate(chunk_text(raw)):
-            chunk = chunk.strip()
-            if not chunk:
-                continue
-            doc_id = f"{subfolder_name}-{file['name']}-{ci}"
-            docs.append(chunk)
-            ids.append(doc_id)
-            embeds.append(embed_text(chunk))
-    if not docs:
-        return 0
-    collection.add(
-        documents=docs,
-        embeddings=embeds,
-        ids=ids
-    )
-    return len(docs)
-
-def retrieve_context(query, top_k=CONTEXT_CHUNKS, max_chunk_chars=CHUNK_CHAR_LIMIT):
-    q_embed = embed_text(query)
-    results = collection.query(query_embeddings=[q_embed], n_results=top_k)
-    doc_results = results.get('documents', [[]])
-    docs = [doc[:max_chunk_chars] for doc in doc_results[0]]
-    return docs, [{} for _ in docs]
-
-def fill_template(proposal_text, user_query, model_name):
-    proposal_text_trimmed = proposal_text[:PROPOSAL_CHAR_LIMIT]
-    rag_query = user_query + "\n\nProposal:\n" + proposal_text_trimmed
-    contexts, metas = retrieve_context(rag_query)
-    context_block = "\n\n".join([f"Context {i+1}:\n{c}" for i, c in enumerate(contexts)])
-    prompt = f"""You are an expert internal auditor.
-Using ONLY the following reference guidelines:
-
-{context_block}
-
-Now, per the following instruction and proposal document, generate an audit response (or fill the template as required):
-
-Instruction:
-{user_query}
-
-Proposal document content:
-{proposal_text_trimmed}
-"""
-    input_tokens = count_tokens(prompt, model_name)
-    if input_tokens > (TOKEN_BUDGET - MAX_RESPONSE_TOKENS):
-        st.warning(f"Prompt ({input_tokens} tokens) too long for {model_name}. Trimming context.")
-        for i in range(len(contexts)):
-            trimmed_contexts = contexts[:i+1]
-            block = "\n\n".join([f"Context {j+1}:\n{contexts[j]}" for j in range(i+1)])
-            curr_prompt = f"""You are an expert internal auditor.
-Using ONLY the following reference guidelines:
-
-{block}
-
-Now, per the following instruction and proposal document, generate an audit response (or fill the template as required):
-
-Instruction:
-{user_query}
-
-Proposal document content:
-{proposal_text_trimmed}
-"""
-            if count_tokens(curr_prompt, model_name) < (TOKEN_BUDGET - MAX_RESPONSE_TOKENS):
-                context_block = block
-                prompt = curr_prompt
-                break
-        else:
-            st.error("Unable to fit context within model limits. Use a shorter proposal and/or shorter prompt.")
-            return "Error: Unable to fit input within model token limits."
-    try:
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": "You are an expert auditor and policy assistant. You have to give your output like a human, in the user point of view. The user will be using you to do his work"},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=MAX_RESPONSE_TOKENS,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        st.error(f"OpenAI API Error: {e}")
-        return "An error occurred in generating the response."
-
 # ----------- UI LAYOUT -----------------
 
 colx1, colx2, colx3 = st.columns([1,2,1])
@@ -262,17 +140,30 @@ subfolder_map = {f['name']: f['id'] for f in subfolders}
 
 selected_subfolders = st.multiselect("Choose one or more subfolders", subfolder_names)
 
+if "reference_docs" not in st.session_state:
+    st.session_state.reference_docs = []
+
 if selected_subfolders:
-    if st.button(f"Index reference files in: {', '.join(selected_subfolders)}"):
-        total_chunks = 0
-        with st.spinner("Indexing files for fast search..."):
+    if st.button(f"Fetch and combine files from: {', '.join(selected_subfolders)}"):
+        docs = []
+        with st.spinner("Fetching reference files..."):
             for subfolder_name in selected_subfolders:
                 files_in_sub = list_txt_in_folder(drive_service, subfolder_map[subfolder_name])
-                n_chunks = index_drive_files(drive_service, files_in_sub, subfolder_name)
-                total_chunks += n_chunks
-            st.success(f"Indexed {len(selected_subfolders)} subfolders, total {total_chunks} chunks added to RAG DB.")
+                for file in files_in_sub:
+                    raw = download_txt_as_text(drive_service, file['id'])
+                    if raw:
+                        docs.append(raw.strip())
+            st.session_state.reference_docs = docs
+            st.success(f"Loaded {len(docs)} reference files.")
 else:
-    st.info("Please select at least one subfolder to index.")
+    st.info("Please select at least one subfolder to load reference documents.")
+
+reference_docs = st.session_state.reference_docs
+
+if reference_docs:
+    st.info(f"Currently loaded reference documents: {len(reference_docs)}")
+else:
+    st.info("No reference documents loaded.")
 
 # -------- Proposal Upload Section ----------
 st.subheader("2. Upload Proposal (Your Document)")
@@ -324,10 +215,49 @@ if "selected_model_label" not in st.session_state:
 st.success(f"Model selected: {st.session_state.selected_model_label}")
 selected_model = st.session_state.selected_model
 
+# ----- Core Template Filling Logic -----------
+def fill_template_openai(reference_docs, proposal_text, user_query, model_name):
+    # Use up to CONTEXT_CHUNKS reference docs, each capped at CHUNK_CHAR_LIMIT
+    context_block = "\n\n".join(d[:CHUNK_CHAR_LIMIT] for d in reference_docs[:CONTEXT_CHUNKS])
+    proposal_text_trimmed = proposal_text[:PROPOSAL_CHAR_LIMIT]
+
+    prompt = f"""You are an expert internal auditor.
+Using ONLY the following reference guidelines:
+
+{context_block}
+
+Now, per the following instruction and proposal document, generate an audit response (or fill the template as required):
+
+Instruction:
+{user_query}
+
+Proposal document content:
+{proposal_text_trimmed}
+"""
+
+    input_tokens = count_tokens(prompt, model_name)
+    if input_tokens > (TOKEN_BUDGET - MAX_RESPONSE_TOKENS):
+        st.warning("Prompt too long. Try selecting fewer reference documents or uploading a smaller proposal.")
+        return "Error: Token limit exceeded."
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": "You are an expert auditor and policy assistant. You have to give your output like a human, in the user point of view. The user will be using you to do his work"},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=MAX_RESPONSE_TOKENS,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"OpenAI API Error: {e}")
+        return "An error occurred in generating the response."
+
 # ----- Quick Prompt Execution -----------
-if proposal_text and quick_prompt:
+if proposal_text and quick_prompt and reference_docs:
     st.info("Quick prompt selected, generating response...")
-    output = fill_template(proposal_text, quick_prompt, selected_model)
+    output = fill_template_openai(reference_docs, proposal_text, quick_prompt, selected_model)
     st.subheader("Result")
     st.write(output)
     st.download_button("Download response as TXT", output, file_name="audit_response.txt", mime="text/plain")
@@ -342,10 +272,10 @@ user_query = st.text_area("Or enter a custom query", value=st.session_state.get(
 if user_query != st.session_state.get("user_query", ""):
     st.session_state.user_query = user_query
 
-if proposal_text and user_query:
+if proposal_text and user_query and reference_docs:
     if st.button("Generate Response"):
         with st.spinner("Working..."):
-            output = fill_template(proposal_text, user_query, selected_model)
+            output = fill_template_openai(reference_docs, proposal_text, user_query, selected_model)
         st.subheader("Result")
         st.write(output)
         st.download_button("Download response as TXT", output, file_name="audit_response.txt", mime="text/plain")
@@ -353,3 +283,5 @@ elif not proposal_text:
     st.info("Upload a proposal document to enable generation.")
 elif not user_query and not quick_prompt:
     st.info("Enter a query or use a Quick Prompt to generate the response.")
+elif not reference_docs:
+    st.info("Please select and load reference documents from Google Drive.")
