@@ -158,10 +158,26 @@ def index_drive_files(service, files, subfolder_name):
             docs.append(chunk)
             metas.append({'subfolder': subfolder_name, 'filename': file['name'], 'text': chunk})
             ids.append(f"{subfolder_name}-{file['name']}-{ci}")
-    if docs:
-        embeds = [embed_text(doc) for doc in docs]
-        index.upsert(vectors=[(ids[i], embeds[i], metas[i]) for i in range(len(docs))])
-    return len(docs)
+    if not docs:
+        return 0
+
+    embeds = [embed_text(doc) for doc in docs]
+    # Verify embedding dimensions
+    for i, e in enumerate(embeds):
+        if len(e) != 1536:
+            raise ValueError(f"Embedding vector length mismatch at index {i}: {len(e)} != 1536")
+
+    batch_size = 100  # safe batch size
+    total_upserted = 0
+    for i in range(0, len(docs), batch_size):
+        batch_ids = ids[i:i+batch_size]
+        batch_embeds = embeds[i:i+batch_size]
+        batch_metas = metas[i:i+batch_size]
+        to_upsert = [(batch_ids[j], batch_embeds[j], batch_metas[j]) for j in range(len(batch_ids))]
+        index.upsert(vectors=to_upsert)
+        total_upserted += len(to_upsert)
+    return total_upserted
+
 
 def retrieve_context(query, top_k=CONTEXT_CHUNKS, max_chunk_chars=CHUNK_CHAR_LIMIT):
     q_embed = embed_text(query)
