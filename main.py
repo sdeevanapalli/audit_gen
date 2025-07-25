@@ -9,7 +9,6 @@ from openai import OpenAI
 from docx import Document
 from pdfminer.high_level import extract_text as extract_pdf_text
 from dotenv import load_dotenv
-
 import tiktoken
 
 # GOOGLE DRIVE
@@ -17,16 +16,22 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-# CHROMADB VECTOR
-import chromadb
-from chromadb.config import Settings
+import sys
+try:
+    import pysqlite3
+    sys.modules["sqlite3"] = pysqlite3
+except ImportError:
+    pass
 
 # ENV CONFIGS AND BASIC SETUP
-
 load_dotenv()
 API_KEY = os.getenv('OPENAI_API_KEY')
 SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
 DRIVE_MAIN_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
+
+PINECONE_API_KEY = os.getenv('PINECONE_API_KEY')
+PINECONE_ENV = os.getenv('PINECONE_ENV')
+PINECONE_INDEX_NAME = "rulebook-rag"
 
 st.set_page_config(page_title="Internal Audit Officer", layout="wide")
 
@@ -49,8 +54,19 @@ TOKEN_BUDGET = 8000
 MAX_RESPONSE_TOKENS = 1024
 
 client = OpenAI(api_key=API_KEY)
-chroma_client = chromadb.Client(Settings())
-collection = chroma_client.get_or_create_collection("rulebook_rag")
+
+from pinecone import Pinecone, ServerlessSpec
+
+pc = Pinecone(api_key=PINECONE_API_KEY)
+if PINECONE_INDEX_NAME not in pc.list_indexes().names():
+    pc.create_index(
+        name=PINECONE_INDEX_NAME,
+        dimension=1536,
+        metric='cosine',
+        spec=ServerlessSpec(cloud='aws', region='us-east-1')
+    )
+
+index = pc.Index(PINECONE_INDEX_NAME)
 
 def count_tokens(text, model="gpt-4o"):
     enc = tiktoken.encoding_for_model(model)
@@ -132,38 +148,40 @@ def chunk_text(text, max_chars=CHUNK_CHAR_LIMIT):
     return chunks
 
 def index_drive_files(service, files, subfolder_name):
-    docs, metas, ids = [], [], []
+    docs, metas, ids, embeds = [], [], [], []
     for file in files:
         raw = download_txt_as_text(service, file['id'])
         for ci, chunk in enumerate(chunk_text(raw)):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
             docs.append(chunk)
-            metas.append({'subfolder': subfolder_name, 'filename': file['name']})
+            metas.append({'subfolder': subfolder_name, 'filename': file['name'], 'text': chunk})
             ids.append(f"{subfolder_name}-{file['name']}-{ci}")
     if docs:
         embeds = [embed_text(doc) for doc in docs]
-        collection.add(
-            documents=docs,
-            embeddings=embeds,
-            metadatas=metas,
-            ids=ids
-        )
+        index.upsert(vectors=[(ids[i], embeds[i], metas[i]) for i in range(len(docs))])
     return len(docs)
 
 def retrieve_context(query, top_k=CONTEXT_CHUNKS, max_chunk_chars=CHUNK_CHAR_LIMIT):
     q_embed = embed_text(query)
-    results = collection.query(
-        query_embeddings=[q_embed],
-        n_results=top_k
-    )
-    docs = [doc[:max_chunk_chars] for doc in results['documents'][0]]
-    metas = results['metadatas'][0]
+    results = index.query(vector=q_embed, top_k=top_k, include_metadata=True)
+    docs, metas = [], []
+    for match in results.matches:
+        doc_text = match.metadata.get("text", "")
+        if not doc_text and "subfolder" in match.metadata and "filename" in match.metadata:
+            doc_text = f"Reference from {match.metadata['subfolder']}/{match.metadata['filename']}"
+        docs.append(doc_text[:max_chunk_chars])
+        metas.append(match.metadata)
     return docs, metas
 
 def fill_template(proposal_text, user_query, model_name):
     proposal_text_trimmed = proposal_text[:PROPOSAL_CHAR_LIMIT]
     rag_query = user_query + "\n\nProposal:\n" + proposal_text_trimmed
     contexts, metas = retrieve_context(rag_query)
-    context_block = "\n\n".join([f"{m['subfolder']}/{m['filename']}:\n{c}" for c, m in zip(contexts, metas)])
+    context_block = "\n\n".join([
+        f"{m.get('subfolder', 'unknown')}/{m.get('filename', 'unknown')}:\n{c}" for c, m in zip(contexts, metas)
+    ])
     prompt = f"""You are an expert internal auditor.
 Using ONLY the following reference guidelines:
 
@@ -182,7 +200,7 @@ Proposal document content:
         st.warning(f"Prompt ({input_tokens} tokens) too long for {model_name}. Trimming context.")
         for i in range(len(contexts)):
             trimmed_contexts = contexts[:i+1]
-            block = "\n\n".join([f"{metas[j]['subfolder']}/{metas[j]['filename']}:\n{contexts[j]}" for j in range(i+1)])
+            block = "\n\n".join([f"{metas[j].get('subfolder','unknown')}/{metas[j].get('filename','unknown')}:\n{contexts[j]}" for j in range(i+1)])
             curr_prompt = f"""You are an expert internal auditor.
 Using ONLY the following reference guidelines:
 
@@ -212,6 +230,9 @@ Proposal document content:
         max_tokens=MAX_RESPONSE_TOKENS,
     )
     return response.choices[0].message.content
+
+# Streamlit UI setup continues below with unchanged logic from original code...
+# Due to length, continuing in next message if required.
 
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
@@ -259,6 +280,7 @@ if prop_file:
                 f"Proposal is large ({len(proposal_text)} chars). Only the first {PROPOSAL_CHAR_LIMIT} characters will be used."
             )
         st.info(f"Uploaded proposal has approx. {len(proposal_text)//5} words.")
+
 st.subheader("3. Query")
 quick_prompt = None
 col1, col2, col3 = st.columns(3)
@@ -271,7 +293,6 @@ with col2:
 with col3:
     if st.button("Internal Audit"):
         quick_prompt = PRESET_QUERIES["Internal Audit"]
-
 
 st.subheader("4. Select Language Model")
 cols = st.columns(len(MODEL_MAP))

@@ -3,9 +3,8 @@ openai
 python-docx
 pdfminer.six
 python-dotenv
-tiktoken
-google-api-python-client
 google-auth
-google-auth-httplib2
-google-auth-oauthlib
-chromadb
+google-api-python-client
+tiktoken
+pysqlite3
+pinecone-client
