@@ -7,4 +7,5 @@ google-auth
 google-api-python-client
 tiktoken
 chromadb>=0.4.24
+duckdb
 pysqlite3==0.5.1
