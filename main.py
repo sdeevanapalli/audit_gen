@@ -272,16 +272,18 @@ user_query = st.text_area("Or enter a custom query", value=st.session_state.get(
 if user_query != st.session_state.get("user_query", ""):
     st.session_state.user_query = user_query
 
-if proposal_text and user_query and reference_docs:
-    if st.button("Generate Response"):
+submit_custom_query = st.button("Submit Custom Query")
+
+if submit_custom_query:
+    if proposal_text and user_query and reference_docs:
         with st.spinner("Working..."):
             output = fill_template_openai(reference_docs, proposal_text, user_query, selected_model)
         st.subheader("Result")
         st.write(output)
         st.download_button("Download response as TXT", output, file_name="audit_response.txt", mime="text/plain")
-elif not proposal_text:
-    st.info("Upload a proposal document to enable generation.")
-elif not user_query and not quick_prompt:
-    st.info("Enter a query or use a Quick Prompt to generate the response.")
-elif not reference_docs:
-    st.info("Please select and load reference documents from Google Drive.")
+    elif not proposal_text:
+        st.info("Upload a proposal document to enable generation.")
+    elif not reference_docs:
+        st.info("Please select and load reference documents from Google Drive.")
+    elif not user_query:
+        st.info("Enter a query or use a Quick Prompt to generate the response.")
