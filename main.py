@@ -256,6 +256,20 @@ with colx2:
     """
     st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
+    st.markdown("""
+        <style>
+        /* Reduce padding and margin at the top */
+        .block-container {
+            padding-top: 1rem !important;
+        }
+
+        /* Optional: tighten the spacing around all content */
+        .main {
+            padding-top: 0rem !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
 try:
     drive_service = get_drive_service()
 except Exception as e:
