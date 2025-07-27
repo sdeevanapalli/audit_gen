@@ -241,7 +241,7 @@ TL;DR:
 colx1, colx2, colx3 = st.columns([1,2,1])
 with colx2:
     st.image("Masthead.png", use_container_width=True)
-    st.markdown("<h1 style='text-align: center;'>Assistant Internal Audit Officer (A-IAO)</h1>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center;'>Assistant Internal Audit Officer (A-IAO)</h2>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>An artificial Intelligence based prototype</p>", unsafe_allow_html=True)
 
 try:
