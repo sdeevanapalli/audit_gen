@@ -333,7 +333,7 @@ if mode == "Report/Template Generation":
     quick_prompt = st.session_state.quick_prompt
 
 # MODEL SELECTION
-st.subheader("5. Select Model")
+st.subheader("Select Model")
 model_cols = st.columns(len(MODEL_MAP))
 for i, (label, model) in enumerate(MODEL_MAP.items()):
     if model_cols[i].button(label):
@@ -382,7 +382,7 @@ if mode == "Report/Template Generation":
             st.info("Please select and load reference documents from Google Drive.")
 
 elif mode == "Query Answering":
-    st.subheader("3. Ask a Question (No proposal necessary)")
+    st.subheader("Ask a Question (No proposal necessary)")
     if "user_query_qa" not in st.session_state:
         st.session_state.user_query_qa = ""
     user_query_qa = st.text_area("Ask a policy/guideline question", value=st.session_state.get("user_query_qa", ""), height=80)
