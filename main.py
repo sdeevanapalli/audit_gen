@@ -244,6 +244,18 @@ with colx2:
     st.markdown("<h3 style='text-align: center;'>Assistant Internal Audit Officer (A-IAO)</h3>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>An artificial Intelligence based prototype</p>", unsafe_allow_html=True)
 
+    hide_streamlit_style = """
+        <style>
+        #MainMenu {visibility: hidden;}
+        footer {visibility: hidden;}
+        header {visibility: hidden;}
+        .stDeployButton {display: none;}
+        .st-emotion-cache-13ln4jf {display: none;} /* Share button */
+        .st-emotion-cache-ocqkz7 {display: none;} /* GitHub Star button */
+        </style>
+    """
+    st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
 try:
     drive_service = get_drive_service()
 except Exception as e:
