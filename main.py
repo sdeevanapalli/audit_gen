@@ -36,12 +36,12 @@ PRESET_QUERIES = {
     "Internal Audit": "Please draft an internal audit document for the uploaded proposal according to the internal audit manual and other guidelines which are uploaded on the google drive accordingly."
 }
 
-CONTEXT_CHUNKS = 10
-CHUNK_CHAR_LIMIT = 1000
-PROPOSAL_CHAR_LIMIT = 2200
-TOKEN_BUDGET = 8000
-MAX_RESPONSE_TOKENS = 1024
-SUMMARY_MAX_TOKENS = 256
+CONTEXT_CHUNKS = 40
+CHUNK_CHAR_LIMIT = 2000
+PROPOSAL_CHAR_LIMIT = 30000
+TOKEN_BUDGET = 125000 #gpt 4o limit is 128k
+MAX_RESPONSE_TOKENS = 2500
+SUMMARY_MAX_TOKENS = 512
 
 client = OpenAI(api_key=API_KEY)
 
@@ -351,7 +351,7 @@ selected_model = st.session_state.selected_model
 # SUBMISSION
 
 if mode == "Report/Template Generation":
-    st.subheader("6. Report/Template Query")
+    st.subheader("Report/Template Query")
     if "user_query" not in st.session_state:
         st.session_state.user_query = ""
     user_query = st.text_area("Enter a query, or select a Quick Prompt above", value=st.session_state.get("user_query", ""), height=80)
