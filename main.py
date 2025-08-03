@@ -388,6 +388,8 @@ with colx2:
         .stDeployButton {display: none;}
         .st-emotion-cache-13ln4jf {display: none;} /* Share button */
         .st-emotion-cache-ocqkz7 {display: none;} /* GitHub Star button */
+        footer {visibility: hidden !important;}
+        [data-testid="stToolbar"] {visibility: hidden !important;}
         </style>
     """
     try:
