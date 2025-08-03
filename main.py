@@ -15,6 +15,7 @@ import tiktoken
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
+import time
 
 # ENV CONFIG AND SETUP
 try:
@@ -22,6 +23,9 @@ try:
     API_KEY = os.getenv("OPENAI_API_KEY")
     SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
     DRIVE_MAIN_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
+    if not API_KEY or not SERVICE_ACCOUNT_JSON or not DRIVE_MAIN_FOLDER_ID:
+        st.error("One or more required environment variables are missing. Please check your .env or secret configs before starting the app.")
+        st.stop()
 except Exception as e:
     st.error(f"Failed loading environment vars: {e}")
     st.stop()
@@ -50,6 +54,7 @@ TOKEN_BUDGET = 125000 #gpt 4o limit is 128k
 MAX_RESPONSE_TOKENS = 2500
 SUMMARY_MAX_TOKENS = 512
 
+# OpenAI client initialisation
 try:
     client = OpenAI(api_key=API_KEY)
 except Exception as e:
@@ -91,21 +96,37 @@ def get_drive_service():
 
 def list_subfolders(service, parent_id):
     try:
-        results = service.files().list(
-            q=f"'{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
-            fields="files(id, name)").execute()
-        return results.get('files', [])
+        results = []
+        page_token = None
+        while True:
+            resp = service.files().list(
+                q=f"'{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+                fields="nextPageToken, files(id, name)", pageToken=page_token
+            ).execute()
+            results.extend(resp.get('files', []))
+            page_token = resp.get('nextPageToken', None)
+            if not page_token:
+                break
+        return results
     except Exception as e:
         st.error(f"Could not list subfolders: {e}")
         return []
 
 def list_txt_in_folder(service, folder_id):
     try:
-        results = service.files().list(
-            q=f"'{folder_id}' in parents and mimeType='text/plain' and trashed=false",
-            pageSize=500,
-            fields="files(id, name)").execute()
-        return results.get('files', [])
+        results = []
+        page_token = None
+        while True:
+            resp = service.files().list(
+                q=f"'{folder_id}' in parents and mimeType='text/plain' and trashed=false",
+                pageSize=500,
+                fields="nextPageToken, files(id, name)", pageToken=page_token
+            ).execute()
+            results.extend(resp.get('files', []))
+            page_token = resp.get('nextPageToken', None)
+            if not page_token:
+                break
+        return results
     except Exception as e:
         st.error(f"Could not list TXT files in folder: {e}")
         return []
@@ -133,14 +154,20 @@ def parse_uploaded_file(uploaded_file):
         fname = uploaded_file.name.lower()
         if fname.endswith('.txt'):
             try:
-                return uploaded_file.read().decode('utf-8', errors='ignore')
+                bytes_content = uploaded_file.read()
+                if isinstance(bytes_content, bytes):
+                    return bytes_content.decode('utf-8', errors='ignore')
+                else:
+                    return str(bytes_content)
             except Exception:
+                st.error("Failed to decode TXT file. Please use UTF-8 encoding.")
                 return ""
         elif fname.endswith('.docx'):
             try:
                 doc = Document(io.BytesIO(uploaded_file.read()))
                 return "\n".join([para.text for para in doc.paragraphs])
             except Exception:
+                st.error("Failed to parse DOCX. File may be corrupt or wrong format.")
                 return ""
         elif fname.endswith('.pdf'):
             try:
@@ -151,8 +178,10 @@ def parse_uploaded_file(uploaded_file):
                     os.remove(tmp.name)
                     return text
             except Exception:
+                st.error("Failed to parse PDF. The file may be encrypted or corrupt.")
                 return ""
         else:
+            st.warning("Unsupported file format. Only .txt, .docx, .pdf allowed.")
             return ""
     except Exception as e:
         st.error(f"Could not parse uploaded file: {e}")
@@ -162,6 +191,9 @@ def chunk_documents(reference_docs, chunk_size=CHUNK_CHAR_LIMIT):
     try:
         chunks = []
         for doc_index, doc in enumerate(reference_docs):
+            doc = (doc or "").strip()
+            if not doc:
+                continue
             for i in range(0, len(doc), chunk_size):
                 chunk = doc[i:i + chunk_size]
                 if chunk.strip():
@@ -171,21 +203,33 @@ def chunk_documents(reference_docs, chunk_size=CHUNK_CHAR_LIMIT):
         st.error(f"Chunking documents failed: {e}")
         return []
 
+def safe_openai_call(fn, *args, retries=3, **kwargs):
+    """Safe OpenAI call with retries and error messaging."""
+    for attempt in range(retries):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            if attempt < retries-1:
+                time.sleep(2 ** attempt)
+            else:
+                st.error(f"OpenAI API Error: {e}")
+                return None
+
 def get_embeddings_for_chunks(chunks):
     try:
         texts = [chunk['text'] for chunk in chunks]
         max_batch = 96
         out = []
         for i in range(0, len(texts), max_batch):
-            try:
-                response = client.embeddings.create(
-                    input=texts[i:i + max_batch],
-                    model="text-embedding-3-small"
-                )
-                emb = [np.array(d.embedding) for d in response.data]
-                out.extend(emb)
-            except Exception as e:
-                st.error(f"OpenAI embedding batch failed: {e}")
+            response = safe_openai_call(client.embeddings.create,
+                input=texts[i:i + max_batch],
+                model="text-embedding-3-small"
+            )
+            if response is None or not hasattr(response, "data"):
+                st.error("Failed to compute context embeddings via OpenAI.")
+                return []
+            emb = [np.array(d.embedding) for d in response.data]
+            out.extend(emb)
         return out
     except Exception as e:
         st.error(f"Embedding for chunks failed: {e}")
@@ -193,28 +237,33 @@ def get_embeddings_for_chunks(chunks):
 
 def embedding_for_query(query):
     try:
-        response = client.embeddings.create(
+        response = safe_openai_call(client.embeddings.create,
             input=[query],
             model="text-embedding-3-small"
         )
+        if response is None or not hasattr(response, "data"):
+            st.error("Failed to compute embedding for query via OpenAI.")
+            return np.zeros(1536)
         return np.array(response.data[0].embedding)
     except Exception as e:
         st.error(f"Embedding for query failed: {e}")
-        return np.zeros(1536) # Typical length for embedding, adjust if your model is different
+        return np.zeros(1536)
 
 def retrieve_relevant_chunks(reference_docs, user_query, k=CONTEXT_CHUNKS):
     try:
-        if "rag_ref_docs_copy" not in st.session_state or st.session_state.rag_ref_docs_copy != reference_docs:
-            chunks = chunk_documents(reference_docs)
-            st.session_state.rag_chunks = chunks
-            st.session_state.rag_chunks_embeddings = get_embeddings_for_chunks(chunks) if chunks else []
-            st.session_state.rag_ref_docs_copy = list(reference_docs)
-
+        # Hash and compare, better session cache
+        ref_hash = hash(tuple(reference_docs))
+        if "rag_ref_docs_hash" not in st.session_state or st.session_state.rag_ref_docs_hash != ref_hash:
+            st.session_state.rag_chunks = chunk_documents(reference_docs)
+            st.session_state.rag_chunks_embeddings = get_embeddings_for_chunks(st.session_state.rag_chunks) if st.session_state.rag_chunks else []
+            st.session_state.rag_ref_docs_hash = ref_hash
         if not st.session_state.rag_chunks:
             return []
-
         query_emb = embedding_for_query(user_query)
         chunk_embs = st.session_state.rag_chunks_embeddings
+        if not chunk_embs:
+            st.warning("No embeddings for context. Try reloading reference docs.")
+            return []
         sims = []
         for c in chunk_embs:
             try:
@@ -232,6 +281,8 @@ def retrieve_relevant_chunks(reference_docs, user_query, k=CONTEXT_CHUNKS):
 def assemble_context(reference_docs, user_query, k=CONTEXT_CHUNKS):
     try:
         relevant_chunks = retrieve_relevant_chunks(reference_docs, user_query, k=k)
+        if not relevant_chunks:
+            st.warning("No relevant reference documents found for this query.")
         context_block = "\n\n".join(relevant_chunks)
         return context_block
     except Exception as e:
@@ -250,7 +301,7 @@ Using ONLY the text below as your source, provide a well-organized, friendly and
 
 - Synthesize and summarize across all the relevant information.
 - Structure your answer in clear bullet points, sections, or paragraphs (as appropriate).
-- Use **bold** for section headings, emoji if helpful, and make the answer easy to read for a non-expert.
+- Use **bold** for section headings, and make the answer easy to read for a non-expert.
 - When your answer uses information from a specific statute, ordinance, section, or reference document, you MUST clearly mention its name and (if available) section/number (e.g., Statute 7A, Ordinance 5, Section 14).
 - Use parenthesis or square brackets for references, e.g., (Statute 7A), [Ordinance No. 3], etc.
 - DO NOT just copy-paste the raw statute—write in your own words.
@@ -267,21 +318,29 @@ If the answer is not found in the provided context, respond: "The answer is not 
 """
         input_tokens = count_tokens(prompt, model_name)
         if input_tokens > (TOKEN_BUDGET - MAX_RESPONSE_TOKENS):
-            st.warning("Prompt too long. Try selecting fewer reference documents.")
-            return "Error: Token limit exceeded."
-        try:
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": "You are an expert auditor and policy assistant. Your job is to help the user by providing high-quality, easy to understand, fully structured answers using ONLY the context supplied."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=MAX_RESPONSE_TOKENS,
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            st.error(f"OpenAI API Error: {e}")
+            # attempt truncation
+            orig_chunks = context_block.split("\n\n")
+            while input_tokens > (TOKEN_BUDGET - MAX_RESPONSE_TOKENS) and len(orig_chunks) > 1:
+                orig_chunks = orig_chunks[:-1]
+                context_block_new = "\n\n".join(orig_chunks)
+                prompt = prompt.replace(context_block, context_block_new)
+                context_block = context_block_new
+                input_tokens = count_tokens(prompt, model_name)
+            if input_tokens > (TOKEN_BUDGET - MAX_RESPONSE_TOKENS):
+                st.warning("Prompt too long. Try selecting fewer reference documents.")
+                return "Error: Token limit exceeded."
+        response = safe_openai_call(client.chat.completions.create,
+            model=model_name,
+            messages=[
+                {"role": "system", "content": "You are an expert auditor and policy assistant. Your job is to help the user by providing high-quality, easy to understand, fully structured answers using ONLY the context supplied."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=MAX_RESPONSE_TOKENS,
+        )
+        if not response or not hasattr(response, "choices"):
+            st.error("No response from OpenAI API.")
             return "An error occurred in generating the response."
+        return response.choices[0].message.content
     except Exception as e:
         st.error(f"Prompt building or model error: {e}")
         return "Model run error."
@@ -296,7 +355,7 @@ Answer:
 TL;DR:
 """
     try:
-        response = client.chat.completions.create(
+        response = safe_openai_call(client.chat.completions.create,
             model=model_name,
             messages=[
                 {"role": "system", "content": "You are a helpful assistant who summarizes text for users in short, plain language for non-experts."},
@@ -304,6 +363,8 @@ TL;DR:
             ],
             max_tokens=SUMMARY_MAX_TOKENS,
         )
+        if not response or not hasattr(response, "choices"):
+            return "Could not generate summary."
         return response.choices[0].message.content
     except Exception:
         return "Could not generate summary."
@@ -381,7 +442,7 @@ if selected_subfolders:
                             docs.append(raw.strip())
                 st.session_state.reference_docs = docs
                 # Reset RAG cache!
-                for k in ['rag_chunks', 'rag_chunks_embeddings', 'rag_ref_docs_copy']:
+                for k in ['rag_chunks', 'rag_chunks_embeddings', 'rag_ref_docs_hash']:
                     if k in st.session_state: del st.session_state[k]
                 st.success(f"Loaded {len(docs)} reference files.")
             except Exception as e:
