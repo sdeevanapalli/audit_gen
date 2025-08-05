@@ -42,9 +42,9 @@ MODEL_MAP = {
 }
 
 PRESET_QUERIES = {
-    "Finance Concurrence": "Please examine the uploaded document according to govt guidelines and GFR uploaded in the google drive and selected here, and give finance concurrence accordingly.",
-    "Payment Proposal": "Please create a payment proposal for the uploaded document according to the template named payment proposal.pdf, in line with the guidelines document and GFR which are uploaded on google drive.",
-    "Internal Audit": "Please draft an internal audit document for the uploaded proposal according to the internal audit manual and other guidelines which are uploaded on the google drive accordingly."
+    "Finance Concurrence": "Please examine the uploaded document in accordance with applicable Government of India financial rules and procedures, including the General Financial Rules (GFR) and any other relevant guidelines provided via the linked Google Drive. Based on this review, provide a finance concurrence report, citing all applicable provisions and ensuring compliance.",
+    "Payment Proposal": "Please prepare a payment proposal for the uploaded document using the format outlined in the file attached if present. The proposal must strictly follow the applicable government guidelines and provisions of the General Financial Rules (GFR) available in the linked Google Drive. Ensure that all required details, justifications, and calculations are provided clearly.",
+    "Internal Audit": "Please draft an internal audit report for the uploaded proposal based on the procedures and templates outlined in the internal audit manual. The report must adhere to all relevant audit standards, check compliance with the GFR and applicable guidelines available on the linked Google Drive, and flag any deviations, observations, or required follow-ups."
 }
 
 CONTEXT_CHUNKS = 40
@@ -296,15 +296,28 @@ def run_model(context_block, proposal_block, user_query, model_name):
             and ("proposal" in user_query.lower() or "uploaded document" in user_query.lower())
         )
         prompt = f"""
-You are an expert policy assistant and internal auditor.
-Using ONLY the text below as your source, provide a well-organized, friendly and helpful answer to the user's question.
-
-- Synthesize and summarize across all the relevant information.
-- Structure your answer in clear bullet points, sections, or paragraphs (as appropriate).
-- Use **bold** for section headings, and make the answer easy to read for a non-expert.
-- When your answer uses information from a specific statute, ordinance, section, or reference document, you MUST clearly mention its name and (if available) section/number (e.g., Statute 7A, Ordinance 5, Section 14).
-- Use parenthesis or square brackets for references, e.g., (Statute 7A), [Ordinance No. 3], etc.
-- DO NOT just copy-paste the raw statute—write in your own words.
+You are an expert internal auditor and financial policy assistant. Using only the content provided (uploaded files, templates, and references), generate a clear, structured, and accurate report. Do not use external knowledge.
+1. Tone & Purpose
+Keep your tone professional, clear, and informative.
+Reports should be understandable to non-experts but grounded in policy.
+2. Structure
+Use clear sections with bold titles, such as:
+Summary: What the document is and what you’re evaluating.
+Compliance Review: List applicable rules (e.g., Rule 136, GFR 2017) and check adherence.
+Observations: Note missing data, errors, or issues.
+Conclusion/Recommendation: State whether the proposal is acceptable, needs correction, or is non-compliant.
+3. Citations
+When referencing policies:
+Mention exact rule names and numbers.
+Use parentheses or brackets for citations: e.g., (Rule 47, GFR 2017), [Audit Manual, Sec. 3.2].
+4. Clarity & Formatting
+Use bullet points where needed.
+Avoid long paragraphs.
+Be concise but complete.
+5. Restrictions
+Do not hallucinate information or rules.
+Do not say “as per guidelines” without specifying the document.
+Do not copy large sections of text—summarize instead.
 
 Reference Documents:
 {context_block}
@@ -314,7 +327,7 @@ Reference Documents:
 User Question:
 {user_query}
 
-If the answer is not found in the provided context, respond: "The answer is not present in the provided references." Otherwise, answer fully, using a friendly, complete, and helpful style.
+If the answer is not found in the provided context, respond: "The answer is not present in the provided references." Otherwise, answer fully, using a friendly, complete, professional and helpful style.
 """
         input_tokens = count_tokens(prompt, model_name)
         if input_tokens > (TOKEN_BUDGET - MAX_RESPONSE_TOKENS):
