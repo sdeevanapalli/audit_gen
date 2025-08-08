@@ -212,7 +212,7 @@ def safe_openai_call(fn, *args, retries=3, **kwargs):
             if attempt < retries-1:
                 time.sleep(2 ** attempt)
             else:
-                st.error(f"OpenAI API Error.")
+                st.error(f"OpenAI API Error. Please use Gamma Model. If issue still exists, please contact the developer.")
                 return None
 
 def get_embeddings_for_chunks(chunks):
