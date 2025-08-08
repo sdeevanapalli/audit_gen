@@ -27,7 +27,7 @@ try:
         st.error("One or more required environment variables are missing. Please check your .env or secret configs before starting the app.")
         st.stop()
 except Exception as e:
-    st.error(f"Failed loading environment vars: {e}")
+    st.error(f"Failed loading environment vars.")
     st.stop()
 
 try:
@@ -58,7 +58,7 @@ SUMMARY_MAX_TOKENS = 512
 try:
     client = OpenAI(api_key=API_KEY)
 except Exception as e:
-    st.error(f"Failed to initialise OpenAI client: {e}")
+    st.error(f"Failed to initialise OpenAI client.")
     st.stop()
 
 def count_tokens(text, model="gpt-4o"):
@@ -68,12 +68,12 @@ def count_tokens(text, model="gpt-4o"):
         try:
             enc = tiktoken.get_encoding("cl100k_base")
         except Exception as e:
-            st.error(f"Token encoding error: {e}")
+            st.error(f"Token encoding error.")
             return len(text)
     try:
         return len(enc.encode(text))
     except Exception as e:
-        st.error(f"Token count error: {e}")
+        st.error(f"Token count error.")
         return len(text)
 
 def get_drive_service():
@@ -91,7 +91,7 @@ def get_drive_service():
         )
         return build('drive', 'v3', credentials=creds)
     except Exception as e:
-        st.error(f"Google Drive service setup failed: {e}")
+        st.error(f"Google Drive service setup failed.")
         raise
 
 def list_subfolders(service, parent_id):
@@ -109,7 +109,7 @@ def list_subfolders(service, parent_id):
                 break
         return results
     except Exception as e:
-        st.error(f"Could not list subfolders: {e}")
+        st.error(f"Could not list subfolders.")
         return []
 
 def list_txt_in_folder(service, folder_id):
@@ -128,7 +128,7 @@ def list_txt_in_folder(service, folder_id):
                 break
         return results
     except Exception as e:
-        st.error(f"Could not list TXT files in folder: {e}")
+        st.error(f"Could not list TXT files in folder.")
         return []
 
 def download_txt_as_text(service, file_id):
@@ -141,12 +141,12 @@ def download_txt_as_text(service, file_id):
             try:
                 _, done = downloader.next_chunk()
             except Exception as e:
-                st.error(f"Download chunk error: {e}")
+                st.error(f"Download chunk error.")
                 break
         fh.seek(0)
         return fh.read().decode('utf-8', errors='ignore')
     except Exception as e:
-        st.error(f"Failed to download text from drive: {e}")
+        st.error(f"Failed to download text from drive.")
         return ""
 
 def parse_uploaded_file(uploaded_file):
@@ -184,7 +184,7 @@ def parse_uploaded_file(uploaded_file):
             st.warning("Unsupported file format. Only .txt, .docx, .pdf allowed.")
             return ""
     except Exception as e:
-        st.error(f"Could not parse uploaded file: {e}")
+        st.error(f"Could not parse uploaded file.")
         return ""
 
 def chunk_documents(reference_docs, chunk_size=CHUNK_CHAR_LIMIT):
@@ -200,7 +200,7 @@ def chunk_documents(reference_docs, chunk_size=CHUNK_CHAR_LIMIT):
                     chunks.append({'text': chunk, 'doc_index': doc_index, 'chunk_start': i})
         return chunks
     except Exception as e:
-        st.error(f"Chunking documents failed: {e}")
+        st.error(f"Chunking documents failed.")
         return []
 
 def safe_openai_call(fn, *args, retries=3, **kwargs):
@@ -212,7 +212,7 @@ def safe_openai_call(fn, *args, retries=3, **kwargs):
             if attempt < retries-1:
                 time.sleep(2 ** attempt)
             else:
-                st.error(f"OpenAI API Error: {e}")
+                st.error(f"OpenAI API Error.")
                 return None
 
 def get_embeddings_for_chunks(chunks):
@@ -232,7 +232,7 @@ def get_embeddings_for_chunks(chunks):
             out.extend(emb)
         return out
     except Exception as e:
-        st.error(f"Embedding for chunks failed: {e}")
+        st.error(f"Embedding for chunks failed.")
         return []
 
 def embedding_for_query(query):
@@ -246,7 +246,7 @@ def embedding_for_query(query):
             return np.zeros(1536)
         return np.array(response.data[0].embedding)
     except Exception as e:
-        st.error(f"Embedding for query failed: {e}")
+        st.error(f"Embedding for query failed.")
         return np.zeros(1536)
 
 def retrieve_relevant_chunks(reference_docs, user_query, k=CONTEXT_CHUNKS):
@@ -275,7 +275,7 @@ def retrieve_relevant_chunks(reference_docs, user_query, k=CONTEXT_CHUNKS):
         relevant_chunks = [st.session_state.rag_chunks[i]['text'] for i in idxs]
         return relevant_chunks
     except Exception as e:
-        st.error(f"Semantic search failed: {e}")
+        st.error(f"Semantic search failed.")
         return []
 
 def assemble_context(reference_docs, user_query, k=CONTEXT_CHUNKS):
@@ -286,7 +286,7 @@ def assemble_context(reference_docs, user_query, k=CONTEXT_CHUNKS):
         context_block = "\n\n".join(relevant_chunks)
         return context_block
     except Exception as e:
-        st.error(f"Assembling context failed: {e}")
+        st.error(f"Assembling context failed.")
         return ""
 
 def run_model(context_block, proposal_block, user_query, model_name):
@@ -355,7 +355,7 @@ If the answer is not found in the provided context, respond: "The answer is not 
             return "An error occurred in generating the response."
         return response.choices[0].message.content
     except Exception as e:
-        st.error(f"Prompt building or model error: {e}")
+        st.error(f"Prompt building or model error.")
         return "Model run error."
 
 def make_summary(full_answer, model_name):
@@ -420,7 +420,7 @@ with colx2:
 try:
     drive_service = get_drive_service()
 except Exception as e:
-    st.error(f"Google Drive authentication/setup failed: {e}")
+    st.error(f"Google Drive authentication/setup failed.")
     st.stop()
 
 # SUBFOLDER
@@ -433,7 +433,7 @@ try:
     subfolder_names = [f['name'] for f in subfolders]
     subfolder_map = {f['name']: f['id'] for f in subfolders}
 except Exception as e:
-    st.error(f"Listing subfolders failed: {e}")
+    st.error(f"Listing subfolders failed.")
     st.stop()
 
 try:
@@ -461,7 +461,7 @@ if selected_subfolders:
                     if k in st.session_state: del st.session_state[k]
                 st.success(f"Loaded {len(docs)} reference files.")
             except Exception as e:
-                st.error(f"Reference document fetching error: {e}")
+                st.error(f"Reference document fetching error.")
 else:
     st.info("Please select at least one subfolder to load reference documents.")
 
@@ -505,7 +505,7 @@ if mode == "Report/Template Generation":
                     proposal_text = proposal_text[:PROPOSAL_CHAR_LIMIT]
                 st.info(f"Uploaded proposal has approx. {max(1, len(proposal_text)//5)} words.")
     except Exception as e:
-        st.error(f"Proposal parsing/upload failed: {e}")
+        st.error(f"Proposal parsing/upload failed.")
 
 # QUICK PROMPTS
 if mode == "Report/Template Generation":
@@ -577,7 +577,7 @@ if mode == "Report/Template Generation":
                     output = run_model(context_block, proposal_text, used_query, selected_model)
                     summary = make_summary(output, selected_model)
                 except Exception as e:
-                    st.error(f"Report/model error: {e}")
+                    st.error(f"Report/model error.")
                     output = "Error"
                     summary = "Error"
             st.subheader("Result")
@@ -587,7 +587,7 @@ if mode == "Report/Template Generation":
                 st.download_button("Download response as TXT", output + "\n\nSummary (TL;DR):\n" + summary,
                                    file_name="audit_response.txt", mime="text/plain")
             except Exception as e:
-                st.error(f"Displaying answer or download failed: {e}")
+                st.error(f"Displaying answer or download failed.")
             st.session_state.quick_prompt = None
         else:
             st.info("Please select and load reference documents from Google Drive.")
@@ -612,7 +612,7 @@ elif mode == "Query Answering":
                     output = run_model(context_block, None, user_query_qa, selected_model)
                     summary = make_summary(output, selected_model)
                 except Exception as e:
-                    st.error(f"QA/model error: {e}")
+                    st.error(f"QA/model error.")
                     output = "Error"
                     summary = "Error"
             st.subheader("Answer")
@@ -622,6 +622,6 @@ elif mode == "Query Answering":
                 st.download_button("Download answer as TXT", output + "\n\nSummary (TL;DR):\n" + summary,
                                    file_name="query_answer.txt", mime="text/plain")
             except Exception as e:
-                st.error(f"Displaying answer or download failed: {e}")
+                st.error(f"Displaying answer or download failed.")
         else:
             st.info("Please select and load reference documents from Google Drive.")
