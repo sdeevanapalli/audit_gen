@@ -79,30 +79,31 @@ PRESET_QUERIES = {
 
 MODEL_CONFIGS = {
     "chatgpt-4o-latest": {
-        "CONTEXT_CHUNKS": 32,           # Moderate chunking for 128k context
-        "CHUNK_CHAR_LIMIT": 5000,       # Slightly higher for better context packing
-        "PROPOSAL_CHAR_LIMIT": 100000,
-        "TOKEN_BUDGET": 128000,         # 128k max context
-        "MAX_RESPONSE_TOKENS": 16000,   # 16k output limit
-        "SUMMARY_MAX_TOKENS": 1500,
+        "CONTEXT_CHUNKS": 8,            # Fits under 30k TPM
+        "CHUNK_CHAR_LIMIT": 2000,       # Smaller per chunk
+        "PROPOSAL_CHAR_LIMIT": 30000,
+        "TOKEN_BUDGET": 128000,         # Model max, but our call stays < 30k
+        "MAX_RESPONSE_TOKENS": 4000,    # Leaves room for input within TPM
+        "SUMMARY_MAX_TOKENS": 1000,
     },
     "gpt-5": {
-        "CONTEXT_CHUNKS": 100,          # Larger chunks for 400k context
-        "CHUNK_CHAR_LIMIT": 6000,       # Higher char limit to reduce fragmentation
-        "PROPOSAL_CHAR_LIMIT": 400000,  # Can handle large proposals
-        "TOKEN_BUDGET": 400000,         # 400k context
-        "MAX_RESPONSE_TOKENS": 128000,  # 128k output limit
-        "SUMMARY_MAX_TOKENS": 8000,
+        "CONTEXT_CHUNKS": 8,
+        "CHUNK_CHAR_LIMIT": 2000,
+        "PROPOSAL_CHAR_LIMIT": 30000,
+        "TOKEN_BUDGET": 400000,
+        "MAX_RESPONSE_TOKENS": 4000,    # Keep total < 30k TPM
+        "SUMMARY_MAX_TOKENS": 1000,
     },
     "gpt-4.1": {
-        "CONTEXT_CHUNKS": 120,          # 1M context → needs high chunk count
-        "CHUNK_CHAR_LIMIT": 8000,       # Maximize per-chunk content
-        "PROPOSAL_CHAR_LIMIT": 800000,  # Large proposals possible
-        "TOKEN_BUDGET": 1000000,        # 1M context
-        "MAX_RESPONSE_TOKENS": 32000,   # 32k output limit
-        "SUMMARY_MAX_TOKENS": 5000,
+        "CONTEXT_CHUNKS": 8,
+        "CHUNK_CHAR_LIMIT": 2000,
+        "PROPOSAL_CHAR_LIMIT": 30000,
+        "TOKEN_BUDGET": 1000000,
+        "MAX_RESPONSE_TOKENS": 4000,
+        "SUMMARY_MAX_TOKENS": 1000,
     },
 }
+
 
 
 
