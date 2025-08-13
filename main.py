@@ -698,14 +698,14 @@ def main():
                 st.session_state.selected_model = model
                 st.session_state.selected_model_label = label
     except Exception:
-        st.session_state.selected_model = "gpt-4o"
-        st.session_state.selected_model_label = "Alpha (Balanced reasoning & speed)"
+        st.session_state.selected_model = "gpt-4.1"
+        st.session_state.selected_model_label = "Gamma - Large input capacity, detailed tasks"
 
     # Initialize model selection if not exists
     if "selected_model" not in st.session_state:
-        st.session_state.selected_model = "gpt-4o"
+        st.session_state.selected_model = "gpt-4.1"
     if "selected_model_label" not in st.session_state:
-        st.session_state.selected_model_label = "Alpha (Balanced reasoning & speed)"
+        st.session_state.selected_model_label = "Gamma - Large input capacity, detailed tasks"
 
     st.success(f"Model selected: {st.session_state.selected_model_label}")
     selected_model = st.session_state.selected_model
