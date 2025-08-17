@@ -17,7 +17,6 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import time
 
-
 # ENV CONFIG AND SETUP
 @st.cache_data
 def load_environment():
@@ -58,12 +57,6 @@ API_KEY = env_vars["API_KEY"]
 SERVICE_ACCOUNT_JSON = env_vars["SERVICE_ACCOUNT_JSON"]
 DRIVE_MAIN_FOLDER_ID = env_vars["DRIVE_MAIN_FOLDER_ID"]
 
-# Set page config first
-try:
-    st.set_page_config(page_title="Internal Audit Officer", layout="wide")
-except Exception:
-    pass
-
 # Model configurations
 MODEL_MAP = {
     "Alpha - Fastest": "chatgpt-4o-latest",
@@ -103,9 +96,6 @@ MODEL_CONFIGS = {
         "SUMMARY_MAX_TOKENS": 1000,
     },
 }
-
-
-
 
 
 # Initialize OpenAI client
@@ -548,7 +538,109 @@ TL;DR:
 
 # STREAMLIT UI
 def main():
-    """Main Streamlit application"""
+    st.set_page_config(page_title="Internal Audit Officer", layout="wide")
+
+    # Custom CSS and JavaScript for device saving
+    st.markdown("""
+    <style>
+        .stTextInput > div > div > input {
+            font-size: 20px !important;
+            height: 50px !important;
+            padding: 10px !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    PASSWORD = "mysecret"
+
+    # Check if device is saved on first load
+    if "device_checked" not in st.session_state:
+        st.session_state.device_checked = False
+
+        # Check localStorage for saved device
+        import streamlit.components.v1 as components
+
+        device_check = components.html("""
+        <script>
+            function checkSavedDevice() {
+                const trusted = localStorage.getItem('deviceTrusted');
+                const trustedTime = localStorage.getItem('deviceTrustedTime');
+
+                if (!trusted || !trustedTime) {
+                    window.parent.postMessage({deviceTrusted: false}, '*');
+                    return;
+                }
+
+                // Check if saved within last 30 days
+                const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+                const now = Date.now();
+
+                if ((now - parseInt(trustedTime)) < thirtyDays) {
+                    window.parent.postMessage({deviceTrusted: true}, '*');
+                } else {
+                    // Clear expired trust
+                    localStorage.removeItem('deviceTrusted');
+                    localStorage.removeItem('deviceTrustedTime');
+                    window.parent.postMessage({deviceTrusted: false}, '*');
+                }
+            }
+
+            checkSavedDevice();
+        </script>
+        """, height=0)
+
+        st.session_state.device_checked = True
+
+    # Ask for password if not authenticated yet
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if not st.session_state.authenticated:
+        st.title("🔐 Authentication Required")
+
+        with st.form("login_form"):
+            pwd = st.text_input("Enter password:", type="password", placeholder="Enter your password")
+            save_device = st.checkbox("Save this device")
+            submit_button = st.form_submit_button("Login")
+
+        if submit_button:
+            if pwd == PASSWORD:
+                st.session_state.authenticated = True
+
+                # Save device if requested
+                if save_device:
+                    import streamlit.components.v1 as components
+
+                    components.html("""
+                    <script>
+                        localStorage.setItem('deviceTrusted', 'true');
+                        localStorage.setItem('deviceTrustedTime', Date.now().toString());
+                        console.log('Device saved successfully');
+                    </script>
+                    """, height=0)
+
+                    st.success("Device saved!")
+                    st.balloons()
+
+                st.rerun()
+            else:
+                st.error("❌ Incorrect password")
+
+        # Add option to clear saved devices
+        if st.button("🗑️ Clear all saved devices"):
+            import streamlit.components.v1 as components
+
+            components.html("""
+            <script>
+                localStorage.removeItem('deviceTrusted');
+                localStorage.removeItem('deviceTrustedTime');
+                alert('All saved devices cleared!');
+            </script>
+            """, height=0)
+
+            st.info("All saved devices have been cleared.")
+
+        st.stop()
 
     # Header
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -842,7 +934,6 @@ def main():
                     st.error(f"Error displaying answer: {str(e)}")
             else:
                 st.info("Please select and load reference documents from Google Drive.")
-
 
 if __name__ == "__main__":
     main()
