@@ -218,15 +218,25 @@ def download_txt_as_text(file_id):
         downloader = MediaIoBaseDownload(fh, request)
 
         done = False
+        max_retries = 5
+        retries = 0
         while not done:
             try:
                 _, done = downloader.next_chunk()
             except Exception as e:
-                st.error(f"Download chunk error: {str(e)}")
-                break
+                retries += 1
+                if retries < max_retries:
+                    st.warning(f"Download chunk error: {str(e)}. Retrying {retries}/{max_retries}...")
+                else:
+                    st.error(f"Download failed after {max_retries} retries: {str(e)}")
+                    break
 
         fh.seek(0)
-        return fh.read().decode('utf-8', errors='ignore')
+        try:
+            return fh.read().decode('utf-8', errors='ignore')
+        except Exception as e:
+            st.error(f"Failed to decode downloaded text: {str(e)}")
+            return ""
     except Exception as e:
         st.error(f"Failed to download text from drive: {str(e)}")
         return ""
