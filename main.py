@@ -98,7 +98,7 @@ MODEL_CONFIGS = {
 
 
 def error_handler(msg: str) -> None:
-    st.error(msg)
+    st.error("An internal error occurred while processing your request. Please try again later.")
 
 # Initialize OpenAI client
 @st.cache_resource
@@ -106,7 +106,7 @@ def get_openai_client() -> Optional[OpenAI]:
     try:
         return OpenAI(api_key=API_KEY)
     except Exception as e:
-        error_handler(f"Failed to initialize OpenAI client: {str(e)}")
+        error_handler("")
         return None
 
 
@@ -123,13 +123,13 @@ def count_tokens(text: str, model: str = "gpt-4.1") -> int:
         try:
             enc = tiktoken.get_encoding("cl100k_base")
         except Exception as e:
-            st.warning(f"Token encoding error: {str(e)}")
+            st.warning("An internal error occurred while processing your request. Please try again later.")
             return len(text) // 4
 
     try:
         return len(enc.encode(text))
     except Exception as e:
-        st.warning(f"Token count error: {str(e)}")
+        st.warning("An internal error occurred while processing your request. Please try again later.")
         return len(text) // 4
 
 
@@ -153,7 +153,7 @@ def get_drive_service() -> Any:
         )
         return build('drive', 'v3', credentials=creds)
     except Exception as e:
-        error_handler(f"Google Drive service setup failed: {str(e)}")
+        error_handler("")
         raise
 
 
@@ -305,7 +305,7 @@ def chunk_documents(reference_docs: List[str], chunk_size: int) -> List[Dict[str
                     })
         return chunks
     except Exception as e:
-        error_handler(f"Chunking documents failed: {str(e)}")
+        error_handler("")
         return []
 
 
@@ -318,7 +318,7 @@ def safe_openai_call(fn: Any, *args, retries: int = 3, **kwargs) -> Any:
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
             else:
-                error_handler(f"OpenAI API Error after {retries} attempts: {str(e)}")
+                error_handler("")
                 return None
 
 
@@ -337,7 +337,7 @@ def get_embeddings_for_chunks(chunks: List[Dict[str, Any]]) -> List[np.ndarray]:
             )
 
             if response is None or not hasattr(response, "data"):
-                error_handler("Failed to compute context embeddings via OpenAI.")
+                error_handler("")
                 return []
 
             emb = [np.array(d.embedding) for d in response.data]
@@ -345,7 +345,7 @@ def get_embeddings_for_chunks(chunks: List[Dict[str, Any]]) -> List[np.ndarray]:
 
         return out
     except Exception as e:
-        error_handler(f"Embedding for chunks failed: {str(e)}")
+        error_handler("")
         return []
 
 
@@ -404,7 +404,7 @@ def retrieve_relevant_chunks(reference_docs: List[str], user_query: str, k: int,
 
         return relevant_chunks
     except Exception as e:
-        error_handler(f"Semantic search failed: {str(e)}")
+        error_handler("")
         return []
 
 
@@ -419,19 +419,18 @@ def assemble_context(reference_docs: List[str], user_query: str, k: int, chunk_s
         context_block = "\n\n".join(relevant_chunks)
         return context_block
     except Exception as e:
-        error_handler(f"Assembling context failed: {str(e)}")
+        error_handler("")
         return ""
 
 
 def run_model(context_block: str, proposal_block: Optional[str], user_query: str, model_name: str, config: Dict[str, Any]) -> str:
     """Run the model with context and query"""
-    try:
-        use_proposal = (
-                proposal_block and
-                ("proposal" in user_query.lower() or "uploaded document" in user_query.lower())
-        )
+    use_proposal = (
+        proposal_block and
+        ("proposal" in user_query.lower() or "uploaded document" in user_query.lower())
+    )
 
-        prompt = f"""
+    prompt = f"""
 You are an expert internal auditor and financial policy assistant. Using only the content provided (uploaded files, templates, and references), generate a clear, structured, and accurate report. Do not use external knowledge.
 
 1. Tone & Purpose
@@ -469,6 +468,7 @@ User Question:
 If the answer is not found in the provided context, respond: "The answer is not present in the provided references." Otherwise, answer fully, using a friendly, complete, professional and helpful style.
 """
 
+    try:
         input_tokens = count_tokens(prompt, model_name)
 
         if input_tokens > (config["TOKEN_BUDGET"] - config["MAX_RESPONSE_TOKENS"]):
@@ -500,12 +500,12 @@ If the answer is not found in the provided context, respond: "The answer is not 
         )
 
         if not response or not hasattr(response, "choices"):
-            error_handler("No response from OpenAI API.")
+            error_handler("")
             return "An error occurred in generating the response."
 
         return response.choices[0].message.content
-    except Exception as e:
-        error_handler(f"Model run error: {str(e)}")
+    except Exception:
+        error_handler("")
         return "Model run error."
 
 
