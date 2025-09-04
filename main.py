@@ -5,6 +5,7 @@ import atexit
 import json
 import streamlit as st
 import numpy as np
+from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 from docx import Document
@@ -18,8 +19,9 @@ from googleapiclient.http import MediaIoBaseDownload
 import time
 
 # ENV CONFIG AND SETUP
+# ENV CONFIG AND SETUP
 @st.cache_data
-def load_environment():
+def load_environment() -> Tuple[Optional[Dict[str, str]], Optional[str]]:
     """Load and validate environment variables"""
     try:
         load_dotenv()
@@ -27,13 +29,10 @@ def load_environment():
         SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
         DRIVE_MAIN_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
 
-        missing_vars = []
-        if not API_KEY:
-            missing_vars.append("OPENAI_API_KEY")
-        if not SERVICE_ACCOUNT_JSON:
-            missing_vars.append("GOOGLE_SERVICE_ACCOUNT_JSON")
-        if not DRIVE_MAIN_FOLDER_ID:
-            missing_vars.append("GOOGLE_DRIVE_FOLDER_ID")
+        missing_vars = [var for var, val in zip([
+            "OPENAI_API_KEY", "GOOGLE_SERVICE_ACCOUNT_JSON", "GOOGLE_DRIVE_FOLDER_ID"],
+            [API_KEY, SERVICE_ACCOUNT_JSON, DRIVE_MAIN_FOLDER_ID]
+        ) if not val]
 
         if missing_vars:
             return None, f"Missing environment variables: {', '.join(missing_vars)}"
@@ -98,13 +97,16 @@ MODEL_CONFIGS = {
 }
 
 
+def error_handler(msg: str) -> None:
+    st.error(msg)
+
 # Initialize OpenAI client
 @st.cache_resource
-def get_openai_client():
+def get_openai_client() -> Optional[OpenAI]:
     try:
         return OpenAI(api_key=API_KEY)
     except Exception as e:
-        st.error(f"Failed to initialize OpenAI client: {str(e)}")
+        error_handler(f"Failed to initialize OpenAI client: {str(e)}")
         return None
 
 
@@ -113,7 +115,7 @@ if not client:
     st.stop()
 
 
-def count_tokens(text, model="gpt-4.1"):
+def count_tokens(text: str, model: str = "gpt-4.1") -> int:
     """Count tokens in text"""
     try:
         enc = tiktoken.encoding_for_model(model)
@@ -132,7 +134,7 @@ def count_tokens(text, model="gpt-4.1"):
 
 
 @st.cache_resource
-def get_drive_service():
+def get_drive_service() -> Any:
     """Initialize Google Drive service"""
     try:
         parsed_json = json.loads(SERVICE_ACCOUNT_JSON)
@@ -151,7 +153,7 @@ def get_drive_service():
         )
         return build('drive', 'v3', credentials=creds)
     except Exception as e:
-        st.error(f"Google Drive service setup failed: {str(e)}")
+        error_handler(f"Google Drive service setup failed: {str(e)}")
         raise
 
 
@@ -285,7 +287,7 @@ def parse_uploaded_file(uploaded_file):
         return ""
 
 
-def chunk_documents(reference_docs, chunk_size):
+def chunk_documents(reference_docs: List[str], chunk_size: int) -> List[Dict[str, Any]]:
     """Split documents into chunks"""
     try:
         chunks = []
@@ -293,7 +295,6 @@ def chunk_documents(reference_docs, chunk_size):
             doc = (doc or "").strip()
             if not doc:
                 continue
-
             for i in range(0, len(doc), chunk_size):
                 chunk = doc[i:i + chunk_size]
                 if chunk.strip():
@@ -304,11 +305,11 @@ def chunk_documents(reference_docs, chunk_size):
                     })
         return chunks
     except Exception as e:
-        st.error(f"Chunking documents failed: {str(e)}")
+        error_handler(f"Chunking documents failed: {str(e)}")
         return []
 
 
-def safe_openai_call(fn, *args, retries=3, **kwargs):
+def safe_openai_call(fn: Any, *args, retries: int = 3, **kwargs) -> Any:
     """Safe OpenAI call with retries"""
     for attempt in range(retries):
         try:
@@ -317,11 +318,11 @@ def safe_openai_call(fn, *args, retries=3, **kwargs):
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
             else:
-                st.error(f"OpenAI API Error after {retries} attempts: {str(e)}")
+                error_handler(f"OpenAI API Error after {retries} attempts: {str(e)}")
                 return None
 
 
-def get_embeddings_for_chunks(chunks):
+def get_embeddings_for_chunks(chunks: List[Dict[str, Any]]) -> List[np.ndarray]:
     """Get embeddings for document chunks"""
     try:
         texts = [chunk['text'] for chunk in chunks]
@@ -336,7 +337,7 @@ def get_embeddings_for_chunks(chunks):
             )
 
             if response is None or not hasattr(response, "data"):
-                st.error("Failed to compute context embeddings via OpenAI.")
+                error_handler("Failed to compute context embeddings via OpenAI.")
                 return []
 
             emb = [np.array(d.embedding) for d in response.data]
@@ -344,7 +345,7 @@ def get_embeddings_for_chunks(chunks):
 
         return out
     except Exception as e:
-        st.error(f"Embedding for chunks failed: {str(e)}")
+        error_handler(f"Embedding for chunks failed: {str(e)}")
         return []
 
 
@@ -367,7 +368,7 @@ def embedding_for_query(query):
         return np.zeros(1536)
 
 
-def retrieve_relevant_chunks(reference_docs, user_query, k, chunk_size):
+def retrieve_relevant_chunks(reference_docs: List[str], user_query: str, k: int, chunk_size: int) -> List[str]:
     """Retrieve relevant chunks using semantic similarity"""
     try:
         # Create a hash for caching
@@ -392,15 +393,10 @@ def retrieve_relevant_chunks(reference_docs, user_query, k, chunk_size):
             st.warning("No embeddings for context. Try reloading reference docs.")
             return []
 
-        # Calculate similarities
-        sims = []
-        for c in chunk_embs:
-            try:
-                sim = float(np.dot(query_emb, c) /
-                            (np.linalg.norm(query_emb) * np.linalg.norm(c) + 1e-8))
-            except Exception:
-                sim = 0.0
-            sims.append(sim)
+        # Batch similarity calculation using numpy for speed
+        chunk_embs_np = np.stack(chunk_embs)
+        query_emb_np = np.array(query_emb)
+        sims = np.dot(chunk_embs_np, query_emb_np) / (np.linalg.norm(chunk_embs_np, axis=1) * np.linalg.norm(query_emb_np) + 1e-8)
 
         # Get top k chunks
         idxs = np.argsort(sims)[::-1][:k]
@@ -408,11 +404,11 @@ def retrieve_relevant_chunks(reference_docs, user_query, k, chunk_size):
 
         return relevant_chunks
     except Exception as e:
-        st.error(f"Semantic search failed: {str(e)}")
+        error_handler(f"Semantic search failed: {str(e)}")
         return []
 
 
-def assemble_context(reference_docs, user_query, k, chunk_size):
+def assemble_context(reference_docs: List[str], user_query: str, k: int, chunk_size: int) -> str:
     """Assemble context from relevant chunks"""
     try:
         relevant_chunks = retrieve_relevant_chunks(reference_docs, user_query, k, chunk_size)
@@ -423,11 +419,11 @@ def assemble_context(reference_docs, user_query, k, chunk_size):
         context_block = "\n\n".join(relevant_chunks)
         return context_block
     except Exception as e:
-        st.error(f"Assembling context failed: {str(e)}")
+        error_handler(f"Assembling context failed: {str(e)}")
         return ""
 
 
-def run_model(context_block, proposal_block, user_query, model_name, config):
+def run_model(context_block: str, proposal_block: Optional[str], user_query: str, model_name: str, config: Dict[str, Any]) -> str:
     """Run the model with context and query"""
     try:
         use_proposal = (
@@ -504,12 +500,12 @@ If the answer is not found in the provided context, respond: "The answer is not 
         )
 
         if not response or not hasattr(response, "choices"):
-            st.error("No response from OpenAI API.")
+            error_handler("No response from OpenAI API.")
             return "An error occurred in generating the response."
 
         return response.choices[0].message.content
     except Exception as e:
-        st.error(f"Model run error: {str(e)}")
+        error_handler(f"Model run error: {str(e)}")
         return "Model run error."
 
 
