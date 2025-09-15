@@ -296,7 +296,6 @@ def parse_uploaded_file(uploaded_file):
                 )
                 return ""
 
-
         elif fname.endswith(".docx"):
             try:
                 doc = Document(io.BytesIO(uploaded_file.read()))
