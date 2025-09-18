@@ -75,7 +75,7 @@ MODEL_MAP = {
 PRESET_QUERIES = {
     "Finance Concurrence": "Please examine the uploaded document in accordance with applicable Government of India financial rules and procedures, including the General Financial Rules (GFR) and any other relevant guidelines provided via the linked Google Drive. Based on this review, provide a finance concurrence report, citing all applicable provisions and ensuring compliance.",
     "Payment Proposal": "Please prepare a payment proposal for the uploaded document using the format outlined in the file attached if present. The proposal must strictly follow the applicable government guidelines and provisions of the General Financial Rules (GFR) available in the linked Google Drive. Ensure that all required details, justifications, and calculations are provided clearly.",
-    "Internal Audit": "Please draft an internal audit report for the uploaded proposal based on the procedures and templates outlined in the internal audit manual. The report must adhere to all relevant audit standards, check compliance with the GFR and applicable guidelines available on the linked Google Drive, and flag any deviations, observations, or required follow-ups.",
+    "Internal Audit": "Please draft an internal audit report for the uploaded proposal based on the procedures and templates outlined in the internal audit manual. Please critically analyze and add weaknesses and strengths. Humanize English. The report must adhere to all relevant audit standards, check compliance with the GFR and applicable guidelines available on the linked Google Drive, and flag any deviations, observations, or required follow-ups.",
 }
 
 MODEL_CONFIGS = {
