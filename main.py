@@ -78,7 +78,6 @@ PRESET_QUERIES = {
     "Internal Audit": "Please draft an internal audit report for the uploaded proposal based on the procedures and templates outlined in the internal audit manual. Please critically analyze and add weaknesses and strengths. Humanize English. The report must adhere to all relevant audit standards, check compliance with the GFR and applicable guidelines available on the linked Google Drive, and flag any deviations, observations, or required follow-ups.",
 }
 
-
 MODEL_CONFIGS = {
     "chatgpt-4o-latest": {
         "CONTEXT_CHUNKS": 8,  # Fits under 30k TPM
