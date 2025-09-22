@@ -111,7 +111,6 @@ def error_handler(msg: str) -> None:
         "An internal error occurred while processing your request. Please try again later."
     )
 
-
 # Initialize OpenAI client
 @st.cache_resource
 def get_openai_client() -> Optional[OpenAI]:
