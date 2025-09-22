@@ -1,33 +1,39 @@
-
 # Internal Audit Officer (IAO)
 
-An advanced, scalable AI-powered audit automation platform architected on a Retrieval-Augmented Generation (RAG) paradigm, leveraging state-of-the-art Large Language Models (LLMs) via OpenAI API to facilitate high-precision internal audit documentation, compliance verification, and financial concurrence synthesis.
+The Internal Audit Officer (IAO) is an AI-powered platform built to make audit automation smarter, faster, and more reliable. It’s designed on a Retrieval-Augmented Generation (RAG) framework and uses advanced large language models to handle everything from audit documentation to compliance checks and financial reporting with high accuracy.
 
-## Core Functionalities
+## Core Features
 
-- **LLM-Driven Generative Intelligence:** Utilizes OpenAI’s GPT-3.5, GPT-4, and GPT-4o models to dynamically generate nuanced, contextually-grounded audit narratives, payment proposals, and compliance reports conforming to regulatory frameworks.
-- **Retrieval-Augmented Generation (RAG) Framework:** Implements an efficient document retrieval subsystem interfacing with Google Drive’s API, ingesting and semantically chunking voluminous regulatory reference corpora to enable context-aware prompt conditioning for the LLMs.
-- **Multi-Modal Document Parsing:** Robust parsing pipeline supporting plaintext (`.txt`), Microsoft Word (`.docx`), and Portable Document Format (`.pdf`), employing `python-docx` and `pdfminer.six` libraries for high-fidelity text extraction under variable document structures.
-- **Token-Efficient Prompt Engineering:** Employs `tiktoken` tokenization algorithms for rigorous budget enforcement, intelligently truncating and prioritizing reference contexts to optimize LLM input tokens while mitigating truncation-induced semantic loss.
-- **Interactive Streamlit-Based UX:** Provides a modular, reactive UI featuring:
-  - One-click Quick Prompt invocations aligned with common audit workflows.
-  - Dynamic selection among heterogeneous LLM variants balancing latency and output granularity.
-  - Asynchronous file upload mechanisms with real-time content parsing.
-  - Downloadable output persistence facilitating audit trail maintenance.
+- **Intelligent Audit Assistance**  
+  IAO uses OpenAI’s GPT models (GPT-3.5, GPT-4, GPT-4o) to generate well-structured audit narratives, compliance reports, and payment proposals. All outputs are aligned with standard regulatory and financial practices.  
+
+- **Context-Aware Retrieval**  
+  The system connects to Google Drive, retrieves documents, and breaks them into smaller, meaningful sections. This ensures that the LLM works with precise context when creating reports or verifying compliance.  
+
+- **Flexible Document Handling**  
+  It can process multiple file types including TXT, DOCX, and PDF. Tools like `python-docx` and `pdfminer.six` are used to extract content accurately, even from complex document layouts.  
+
+- **Smart Token Management**  
+  To work within LLM input limits, the platform uses `tiktoken` to manage tokens efficiently. Important sections of text are prioritized so that key details are never lost.  
+
+- **Streamlined User Experience**  
+  The Streamlit-based interface makes it easy for users to interact with the system. Features include:  
+  - Quick prompts for common audit tasks  
+  - Options to choose between different LLM models depending on speed and detail requirements  
+  - Drag-and-drop file uploads with instant parsing  
+  - One-click downloads to save generated reports and maintain audit trails  
 
 ## Technology Stack
 
-- **Frontend & Orchestration:** Streamlit for rapid prototyping and deployment of interactive AI-driven interfaces.
-- **LLM Backend:** OpenAI GPT-3.5, GPT-4, and GPT-4o models accessed via OpenAI Python SDK.
-- **Retrieval Layer:** Google Drive REST API integration, authenticated through OAuth2 service accounts, implementing recursive folder enumeration and MIME-type filtering for document retrieval.
-- **Document Processing:** `python-docx` for DOCX parsing, `pdfminer.six` for PDF content extraction, and native UTF-8 decoding pipelines.
-- **Token Management:** OpenAI’s `tiktoken` library for precise token accounting and input size constraint adherence.
-- **Environment & Configuration:** Managed via `.env` files utilizing `python-dotenv` to secure API credentials and service account JSON payloads.
+- **Frontend & Orchestration:** Streamlit  
+- **LLM Backend:** OpenAI GPT-3.5, GPT-4, GPT-4o via the OpenAI Python SDK  
+- **Retrieval Layer:** Google Drive REST API with OAuth2 authentication  
+- **Document Processing:** `python-docx`, `pdfminer.six`, UTF-8 text pipelines  
+- **Token Management:** OpenAI `tiktoken`  
+- **Configuration:** Environment variables managed with `python-dotenv`  
 
+## How It Works in Practice
 
-## Operational Considerations
+The platform dynamically adjusts how much context to include in each LLM request, always staying within token limits. Users can decide which GPT model to use depending on whether speed or detail is the priority. Security is maintained through proper credential handling and OAuth2 standards.  
 
-* The system orchestrates token-budgeted prompt concatenation, dynamically truncating reference document chunks to comply with OpenAI’s input constraints.
-* Selection between GPT model variants affords fine-grained control over inference latency versus output detail and verbosity.
-* All API interactions adhere to OAuth2 best practices with ephemeral credential handling to ensure security compliance.
-* Designed for extensibility to incorporate additional document types and downstream audit automation workflows.
+IAO is built with flexibility in mind. It can be extended to support new document types and adapted for more specialized audit workflows as organizations grow.  
