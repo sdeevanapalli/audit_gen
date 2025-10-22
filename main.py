@@ -24,25 +24,25 @@ import time
 
 
 # ENV CONFIG AND SETUP
-# ENV CONFIG AND SETUP
 @st.cache_data
 def load_environment() -> Tuple[Optional[Dict[str, str]], Optional[str]]:
-    """Load and validate environment variables"""
+    """Load and validate environment variables for OpenAI and Drive folder id.
+
+    Note: service account credentials are intentionally NOT required here because
+    they may come from Streamlit `st.secrets`, a local file, or one of several
+    environment variables. Use `get_service_account_info()` to obtain the
+    parsed credentials (dict) in a flexible way.
+    """
     try:
         load_dotenv()
         API_KEY = os.getenv("OPENAI_API_KEY")
-        SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
         DRIVE_MAIN_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
         missing_vars = [
             var
             for var, val in zip(
-                [
-                    "OPENAI_API_KEY",
-                    "GOOGLE_SERVICE_ACCOUNT_JSON",
-                    "GOOGLE_DRIVE_FOLDER_ID",
-                ],
-                [API_KEY, SERVICE_ACCOUNT_JSON, DRIVE_MAIN_FOLDER_ID],
+                ["OPENAI_API_KEY", "GOOGLE_DRIVE_FOLDER_ID"],
+                [API_KEY, DRIVE_MAIN_FOLDER_ID],
             )
             if not val
         ]
@@ -52,7 +52,6 @@ def load_environment() -> Tuple[Optional[Dict[str, str]], Optional[str]]:
 
         return {
             "API_KEY": API_KEY,
-            "SERVICE_ACCOUNT_JSON": SERVICE_ACCOUNT_JSON,
             "DRIVE_MAIN_FOLDER_ID": DRIVE_MAIN_FOLDER_ID,
         }, None
     except Exception as e:
@@ -66,8 +65,62 @@ if env_error:
     st.stop()
 
 API_KEY = env_vars["API_KEY"]
-SERVICE_ACCOUNT_JSON = env_vars["SERVICE_ACCOUNT_JSON"]
 DRIVE_MAIN_FOLDER_ID = env_vars["DRIVE_MAIN_FOLDER_ID"]
+
+
+def get_service_account_info() -> Optional[dict]:
+    """Return parsed service-account JSON as a dict.
+
+    Loading order (most preferred first):
+    - Streamlit secrets: `st.secrets["google_service_account"]` (can be a table/dict or a JSON string)
+    - Environment variable `SERVICE_ACCOUNT_FILE` (path to a json file)
+    - Environment variable `SERVICE_ACCOUNT_JSON` or `GOOGLE_SERVICE_ACCOUNT_JSON` (JSON string)
+    - Local file `service-account.json` in the repo cwd
+
+    Returns None when no credentials are found. Caller should raise a helpful
+    error if credentials are required.
+    """
+    # 1) Streamlit secrets (production - Streamlit Cloud)
+    try:
+        if "google_service_account" in st.secrets:
+            info = st.secrets["google_service_account"]
+            # st.secrets can store tables (dict-like) or strings
+            if isinstance(info, str):
+                return json.loads(info)
+            return dict(info)
+    except Exception:
+        # don't fail hard here; fall back to env/local methods
+        pass
+
+    # 2) Local environment (.env) or system env
+    load_dotenv()
+    sa_file = os.getenv("SERVICE_ACCOUNT_FILE") or os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+    sa_json = os.getenv("SERVICE_ACCOUNT_JSON") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+
+    if sa_file and os.path.exists(sa_file):
+        try:
+            with open(sa_file, "r") as fh:
+                return json.load(fh)
+        except Exception:
+            raise ValueError(f"Could not read service account file at {sa_file}")
+
+    if sa_json:
+        try:
+            return json.loads(sa_json)
+        except Exception:
+            raise ValueError("SERVICE_ACCOUNT_JSON / GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON")
+
+    # 3) local default filename fallback
+    local_path = os.path.join(os.getcwd(), "service-account.json")
+    if os.path.exists(local_path):
+        try:
+            with open(local_path, "r") as fh:
+                return json.load(fh)
+        except Exception:
+            raise ValueError("Found local service-account.json but could not parse it")
+
+    # Nothing found
+    return None
 
 # Model configurations
 MODEL_MAP = {
@@ -156,10 +209,9 @@ def count_tokens(text: str, model: str = "gpt-4.1") -> int:
 def get_drive_service() -> Any:
     """Initialize Google Drive service"""
     try:
-        # Prefer using the full service account JSON provided via env var
-        if SERVICE_ACCOUNT_JSON:
-            parsed_json = json.loads(SERVICE_ACCOUNT_JSON)
-            # Ensure private_key has proper newlines
+        # Prefer using any parsed service account info (from st.secrets, env var, or file)
+        parsed_json = get_service_account_info()
+        if parsed_json:
             if parsed_json.get("private_key"):
                 parsed_json["private_key"] = parsed_json["private_key"].replace("\\n", "\n")
 
@@ -176,7 +228,7 @@ def get_drive_service() -> Any:
             )
             return build("drive", "v3", credentials=creds)
 
-        raise RuntimeError("No service account credentials provided via env or local file.")
+        raise RuntimeError("No service account credentials provided via st.secrets, env, or local file.")
     except Exception as e:
         error_handler("")
         raise
@@ -329,9 +381,10 @@ class GoogleDriveExtractor:
 def get_drive_extractor() -> GoogleDriveExtractor:
     # First, prefer full JSON provided via environment variable
     try:
-        if SERVICE_ACCOUNT_JSON:
-            # Pass JSON string directly to extractor which accepts dict/string
-            return GoogleDriveExtractor(auth_method='service_account', credentials_path=SERVICE_ACCOUNT_JSON)
+        parsed = get_service_account_info()
+        if parsed:
+            # Pass parsed dict directly to extractor which accepts dict/string
+            return GoogleDriveExtractor(auth_method='service_account', credentials_path=parsed)
     except Exception:
         pass
 
