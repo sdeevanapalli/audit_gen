@@ -35,8 +35,24 @@ def load_environment() -> Tuple[Optional[Dict[str, str]], Optional[str]]:
     """
     try:
         load_dotenv()
-        API_KEY = os.getenv("OPENAI_API_KEY")
-        DRIVE_MAIN_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        # Prefer environment variables, but also accept Streamlit secrets (for prod)
+        API_KEY = os.getenv("OPENAI_API_KEY") or None
+        DRIVE_MAIN_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID") or None
+
+        # If running on Streamlit (prod), allow secrets with lowercase keys too
+        try:
+            if not API_KEY and "openai_api_key" in st.secrets:
+                API_KEY = st.secrets.get("openai_api_key")
+            if not API_KEY and "OPENAI_API_KEY" in st.secrets:
+                API_KEY = st.secrets.get("OPENAI_API_KEY")
+
+            if not DRIVE_MAIN_FOLDER_ID and "google_drive_folder_id" in st.secrets:
+                DRIVE_MAIN_FOLDER_ID = st.secrets.get("google_drive_folder_id")
+            if not DRIVE_MAIN_FOLDER_ID and "GOOGLE_DRIVE_FOLDER_ID" in st.secrets:
+                DRIVE_MAIN_FOLDER_ID = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID")
+        except Exception:
+            # st may not be available in some contexts; ignore if so
+            pass
 
         missing_vars = [
             var
