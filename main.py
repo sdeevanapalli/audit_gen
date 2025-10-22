@@ -16,6 +16,10 @@ import tiktoken
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+import pickle
 import time
 
 
@@ -152,32 +156,192 @@ def count_tokens(text: str, model: str = "gpt-4.1") -> int:
 def get_drive_service() -> Any:
     """Initialize Google Drive service"""
     try:
-        parsed_json = json.loads(SERVICE_ACCOUNT_JSON)
-        parsed_json["private_key"] = parsed_json["private_key"].replace("\\n", "\n")
+        # Prefer using the full service account JSON provided via env var
+        if SERVICE_ACCOUNT_JSON:
+            parsed_json = json.loads(SERVICE_ACCOUNT_JSON)
+            # Ensure private_key has proper newlines
+            if parsed_json.get("private_key"):
+                parsed_json["private_key"] = parsed_json["private_key"].replace("\\n", "\n")
 
-        temp_service_file = tempfile.NamedTemporaryFile(
-            mode="w+", suffix=".json", delete=False
-        )
-        json.dump(parsed_json, temp_service_file)
-        temp_service_file.close()
-
-        SERVICE_ACCOUNT_FILE = temp_service_file.name
-        atexit.register(
-            lambda: (
-                os.remove(SERVICE_ACCOUNT_FILE)
-                if os.path.exists(SERVICE_ACCOUNT_FILE)
-                else None
+            creds = service_account.Credentials.from_service_account_info(
+                parsed_json, scopes=["https://www.googleapis.com/auth/drive.readonly"]
             )
-        )
+            return build("drive", "v3", credentials=creds)
 
-        creds = service_account.Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_FILE,
-            scopes=["https://www.googleapis.com/auth/drive.readonly"],
-        )
-        return build("drive", "v3", credentials=creds)
+        # Fallback: if a local service-account.json file exists, load from file
+        local_path = os.path.join(os.getcwd(), "service-account.json")
+        if os.path.exists(local_path):
+            creds = service_account.Credentials.from_service_account_file(
+                local_path, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+            )
+            return build("drive", "v3", credentials=creds)
+
+        raise RuntimeError("No service account credentials provided via env or local file.")
     except Exception as e:
         error_handler("")
         raise
+
+
+# New: GoogleDriveExtractor and helper to integrate with existing app
+SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+
+
+class GoogleDriveExtractor:
+    def __init__(self, auth_method='service_account', credentials_path='credentials.json'):
+        self.auth_method = auth_method
+        self.credentials_path = credentials_path
+        self.service = self._authenticate()
+
+    def _authenticate(self):
+        creds = None
+        if self.auth_method == 'service_account':
+            # credentials_path may be a path to a file OR a dict-like JSON string
+            # If path exists, load from file
+            if isinstance(self.credentials_path, str) and os.path.exists(self.credentials_path):
+                creds = service_account.Credentials.from_service_account_file(
+                    self.credentials_path, scopes=SCOPES
+                )
+            else:
+                # Try to interpret credentials_path as JSON content
+                parsed = None
+                if isinstance(self.credentials_path, dict):
+                    parsed = self.credentials_path
+                else:
+                    try:
+                        parsed = json.loads(self.credentials_path)
+                    except Exception:
+                        parsed = None
+
+                if parsed:
+                    if parsed.get("private_key"):
+                        parsed["private_key"] = parsed["private_key"].replace("\\n", "\n")
+                    creds = service_account.Credentials.from_service_account_info(parsed, scopes=SCOPES)
+                else:
+                    raise RuntimeError("Invalid service account credentials for service_account auth method")
+        else:
+            # Fallback to OAuth flow (interactive)
+            if os.path.exists('token.pickle'):
+                with open('token.pickle', 'rb') as token:
+                    creds = pickle.load(token)
+
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        self.credentials_path, SCOPES
+                    )
+                    creds = flow.run_local_server(port=0)
+
+                with open('token.pickle', 'wb') as token:
+                    pickle.dump(creds, token)
+
+        return build('drive', 'v3', credentials=creds)
+
+    def get_all_text_files(self, folder_id: str) -> List[Dict[str, str]]:
+        # Recursively traverse and return files as dicts with id, name, path, mimeType
+        return self._traverse_folder(folder_id, path="")
+
+    def _traverse_folder(self, folder_id: str, path: str = "") -> List[Dict[str, str]]:
+        all_files: List[Dict[str, str]] = []
+        page_token = None
+        query = f"'{folder_id}' in parents and trashed=false"
+
+        while True:
+            results = self.service.files().list(
+                q=query,
+                fields="nextPageToken, files(id, name, mimeType, parents, capabilities)",
+                pageToken=page_token,
+                pageSize=100,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            ).execute()
+
+            items = results.get('files', [])
+            for item in items:
+                current_path = f"{path}/{item['name']}" if path else item['name']
+                if item['mimeType'] == 'application/vnd.google-apps.folder':
+                    caps = item.get('capabilities', {})
+                    if caps.get('canListChildren', True):
+                        all_files.extend(self._traverse_folder(item['id'], current_path))
+                    else:
+                        # Skip inaccessible folder
+                        continue
+                else:
+                    if self._is_text_file(item):
+                        all_files.append({
+                            'id': item['id'],
+                            'name': item['name'],
+                            'path': current_path,
+                            'mimeType': item.get('mimeType', ''),
+                        })
+
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+
+        return all_files
+
+    def _is_text_file(self, item: Dict[str, Any]) -> bool:
+        mime_type = item.get('mimeType', '')
+        name = item.get('name', '')
+        text_mime_types = [
+            'text/plain', 'text/csv', 'text/html', 'text/markdown',
+            'application/json', 'application/xml', 'text/x-python', 'application/javascript'
+        ]
+        text_extensions = ['.txt', '.md', '.csv', '.json', '.xml', '.log', '.py', '.js', '.java']
+        return (mime_type in text_mime_types) or any(name.lower().endswith(ext) for ext in text_extensions)
+
+    def download_file(self, file_id: str) -> Optional[str]:
+        """Download a file's bytes from Drive and return decoded text (utf-8, ignore errors)."""
+        try:
+            request = self.service.files().get_media(fileId=file_id, supportsAllDrives=True)
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+
+            done = False
+            max_retries = 5
+            retries = 0
+            while not done:
+                try:
+                    _, done = downloader.next_chunk()
+                except Exception as e:
+                    retries += 1
+                    if retries < max_retries:
+                        # small backoff
+                        time.sleep(2 ** retries)
+                        continue
+                    else:
+                        print(f"    ✗ Error downloading file {file_id}: {str(e)}")
+                        return None
+
+            fh.seek(0)
+            try:
+                return fh.read().decode('utf-8', errors='ignore')
+            except Exception:
+                return fh.read().decode('latin-1', errors='ignore')
+        except Exception as e:
+            print(f"    ✗ Error downloading file {file_id}: {str(e)}")
+            return None
+
+
+@st.cache_resource
+def get_drive_extractor() -> GoogleDriveExtractor:
+    # First, prefer full JSON provided via environment variable
+    try:
+        if SERVICE_ACCOUNT_JSON:
+            # Pass JSON string directly to extractor which accepts dict/string
+            return GoogleDriveExtractor(auth_method='service_account', credentials_path=SERVICE_ACCOUNT_JSON)
+    except Exception:
+        pass
+
+    # Next, prefer a local service-account.json file in repo root if present
+    local_path = os.path.join(os.getcwd(), 'service-account.json')
+    if os.path.exists(local_path):
+        return GoogleDriveExtractor(auth_method='service_account', credentials_path=local_path)
+
+    # Fall back to OAuth interactive flow if no service account found
+    return GoogleDriveExtractor(auth_method='oauth', credentials_path='credentials.json')
 
 
 @st.cache_data
@@ -214,28 +378,10 @@ def list_subfolders(parent_id):
 def list_txt_in_folder(folder_id):
     """List text files in a Google Drive folder"""
     try:
-        service = get_drive_service()
-        results = []
-        page_token = None
-
-        while True:
-            resp = (
-                service.files()
-                .list(
-                    q=f"'{folder_id}' in parents and mimeType='text/plain' and trashed=false",
-                    pageSize=500,
-                    fields="nextPageToken, files(id, name)",
-                    pageToken=page_token,
-                )
-                .execute()
-            )
-
-            results.extend(resp.get("files", []))
-            page_token = resp.get("nextPageToken", None)
-            if not page_token:
-                break
-
-        return results
+        extractor = get_drive_extractor()
+        # Use extractor to get all text files under the folder and return only id/name
+        files = extractor.get_all_text_files(folder_id)
+        return [{'id': f['id'], 'name': f['name']} for f in files]
     except Exception as e:
         st.error(f"Could not list TXT files in folder: {str(e)}")
         return []
@@ -245,33 +391,9 @@ def list_txt_in_folder(folder_id):
 def download_txt_as_text(file_id):
     """Download text file from Google Drive"""
     try:
-        service = get_drive_service()
-        request = service.files().get_media(fileId=file_id)
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, request)
-
-        done = False
-        max_retries = 5
-        retries = 0
-        while not done:
-            try:
-                _, done = downloader.next_chunk()
-            except Exception as e:
-                retries += 1
-                if retries < max_retries:
-                    st.warning(
-                        f"Download chunk error: {str(e)}. Retrying {retries}/{max_retries}..."
-                    )
-                else:
-                    st.error(f"Download failed after {max_retries} retries: {str(e)}")
-                    break
-
-        fh.seek(0)
-        try:
-            return fh.read().decode("utf-8", errors="ignore")
-        except Exception as e:
-            st.error(f"Failed to decode downloaded text: {str(e)}")
-            return ""
+        extractor = get_drive_extractor()
+        content = extractor.download_file(file_id)
+        return content or ""
     except Exception as e:
         st.error(f"Failed to download text from drive: {str(e)}")
         return ""
