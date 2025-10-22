@@ -26,13 +26,6 @@ import time
 # ENV CONFIG AND SETUP
 @st.cache_data
 def load_environment() -> Tuple[Optional[Dict[str, str]], Optional[str]]:
-    """Load and validate environment variables for OpenAI and Drive folder id.
-
-    Note: service account credentials are intentionally NOT required here because
-    they may come from Streamlit `st.secrets`, a local file, or one of several
-    environment variables. Use `get_service_account_info()` to obtain the
-    parsed credentials (dict) in a flexible way.
-    """
     try:
         load_dotenv()
         # Prefer environment variables, but also accept Streamlit secrets (for prod)
@@ -51,7 +44,6 @@ def load_environment() -> Tuple[Optional[Dict[str, str]], Optional[str]]:
             if not DRIVE_MAIN_FOLDER_ID and "GOOGLE_DRIVE_FOLDER_ID" in st.secrets:
                 DRIVE_MAIN_FOLDER_ID = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID")
         except Exception:
-            # st may not be available in some contexts; ignore if so
             pass
 
         missing_vars = [
@@ -85,17 +77,6 @@ DRIVE_MAIN_FOLDER_ID = env_vars["DRIVE_MAIN_FOLDER_ID"]
 
 
 def get_service_account_info() -> Optional[dict]:
-    """Return parsed service-account JSON as a dict.
-
-    Loading order (most preferred first):
-    - Streamlit secrets: `st.secrets["google_service_account"]` (can be a table/dict or a JSON string)
-    - Environment variable `SERVICE_ACCOUNT_FILE` (path to a json file)
-    - Environment variable `SERVICE_ACCOUNT_JSON` or `GOOGLE_SERVICE_ACCOUNT_JSON` (JSON string)
-    - Local file `service-account.json` in the repo cwd
-
-    Returns None when no credentials are found. Caller should raise a helpful
-    error if credentials are required.
-    """
     # 1) Streamlit secrets (production - Streamlit Cloud)
     try:
         if "google_service_account" in st.secrets:
@@ -135,7 +116,6 @@ def get_service_account_info() -> Optional[dict]:
         except Exception:
             raise ValueError("Found local service-account.json but could not parse it")
 
-    # Nothing found
     return None
 
 # Model configurations
